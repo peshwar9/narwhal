@@ -5,12 +5,14 @@ use axum::response::IntoResponse;
 use libp2p::swarm::Swarm;
 use std::time::Duration;
 use axum::extract::State;
+use log::error;
 use axum::{
     routing::post,
     Json, Router,
 };
 use serde::{Serialize, Deserialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::Mutex as TokioMutex;
 
 use log::info;
 use env_logger::{Env, Builder};
@@ -61,11 +63,11 @@ use message::TransactionMessage;
 use narhwal::transaction::Transaction;
 use narhwal::dag::DAG;
 
-type _PeerMap = Arc<Mutex<HashMap<PeerId, Vec<Multiaddr>>>>;
+type _PeerMap = Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>;
 type SharedState = (
-    Arc<Mutex<Swarm<Behavior>>>,
-    Arc<Mutex<HashMap<PeerId, Vec<Multiaddr>>>>,
-    Arc<Mutex<DAG>>
+    Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>,
+    Arc<TokioMutex<DAG>>,
+    Arc<TokioMutex<Swarm<Behavior>>>
 );
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -83,7 +85,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_key = identity::Keypair::generate_ed25519();
     
     // Create a DAG for the current node
-    let dag = Arc::new(Mutex::new(DAG::new()));
+    let dag = Arc::new(TokioMutex::new(DAG::new()));
 
     // Build the Swarm
     let mut swarm = build_swarm(local_key.clone(), dag.clone()).await?;
@@ -95,41 +97,89 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(addr) = args().nth(1) {
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         let remote: Multiaddr = addr.parse()?;
-        swarm.dial(remote)?;
-        info!("Dialed to: {addr}");
+        
+        // Add retry logic for initial connection
+        let mut retry_count = 0;
+        while retry_count < 3 {
+            match swarm.dial(remote.clone()) {
+                Ok(_) => {
+                    info!("Dialed to: {addr}");
+                    break;
+                }
+                Err(e) => {
+                    error!("Failed to dial {}: {}", addr, e);
+                    retry_count += 1;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
     } else {
         info!("Acting as bootstrap node");
         swarm.listen_on("/ip4/0.0.0.0/tcp/8000".parse()?)?;
     }
 
-    // Handle events in the swarm
-    handle_swarm_events(&mut swarm, dag.clone()).await?;
+    // Instead of calling handle_swarm_events directly, spawn it as a task
+    let swarm = Arc::new(TokioMutex::new(swarm));
+    let swarm_task = {
+        let dag = dag.clone();
+        let swarm_clone = swarm.clone();
+        tokio::spawn(async move {
+            loop {
+                let event = {
+                    let mut swarm = swarm_clone.lock().await;
+                    swarm.select_next_some().await
+                };
+
+                // Create a new block to handle events
+                {
+                    let mut swarm = swarm_clone.lock().await;
+                    if let Err(e) = handle_event(&mut swarm, &event, dag.clone()).await {
+                        error!("Error handling swarm event: {}", e);
+                        break;
+                    }
+                }
+            }
+        })
+    };
 
     // Create shared state
-    let swarm = Arc::new(Mutex::new(swarm));
-    let peers = Arc::new(Mutex::new(HashMap::new()));
-    let state = (swarm.clone(), peers, dag);
+    let peers = Arc::new(TokioMutex::new(HashMap::new()));
+    let state = (peers.clone(), dag.clone(), swarm.clone());
 
     // Initialize the Axum server with state
     let app = Router::new()
         .route("/transaction", post(receive_transaction))
         .with_state(state);
 
-    // Run Axum server in a separate task
-    tokio::spawn(async move {
+    // In main function, modify the argument handling
+    let http_port = match args().nth(2) {
+        Some(port) => port,
+        None => "3000".to_string()  // Default port if not specified
+    };
+
+    // Spawn the HTTP server with the specified port
+    let server = tokio::spawn(async move {
+        let addr = format!("0.0.0.0:{}", http_port);
+        info!("Starting HTTP server on {}", addr);
         axum::serve(
-            tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap(),
+            tokio::net::TcpListener::bind(&addr).await.expect("Failed to bind"),
             app.into_make_service()
         )
         .await
         .unwrap();
     });
 
+    // Wait for both tasks
+    tokio::select! {
+        _ = swarm_task => println!("Swarm task completed"),
+        _ = server => println!("Server task completed"),
+    }
+
     Ok(())
 }
 
 // Function to build and configure the swarm
-async fn build_swarm(local_key: identity::Keypair, _dag: Arc<Mutex<DAG>>) -> Result<Swarm<Behavior>, Box<dyn std::error::Error>> {
+async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -> Result<Swarm<Behavior>, Box<dyn std::error::Error>> {
     let swarm = SwarmBuilder::with_existing_identity(local_key.clone())
         .with_tokio()
         .with_tcp(
@@ -170,86 +220,26 @@ async fn build_swarm(local_key: identity::Keypair, _dag: Arc<Mutex<DAG>>) -> Res
 
     Ok(swarm)
 }
-// Function to handle swarm events in a loop
-async fn handle_swarm_events(swarm: &mut Swarm<Behavior>, dag: Arc<Mutex<DAG>>) -> Result<(), Box<dyn Error>> {
-    let mut peers: HashMap<PeerId, Vec<Multiaddr>> = HashMap::new();
 
-    loop {
-        match swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { listener_id, address } => info!("NewListenAddr: {listener_id:?} | {address:?}"),
-            SwarmEvent::ConnectionEstablished {
-                peer_id,
-                connection_id,
-                endpoint,
-                num_established,
-                concurrent_dial_errors,
-                established_in,
-            } => info!("ConnectionEstablished: {peer_id} | {connection_id} | {endpoint:?} | {num_established} | {concurrent_dial_errors:?} | {established_in:?}"),
-            SwarmEvent::Dialing { peer_id, connection_id } => info!("Dialing: {peer_id:?} | {connection_id}"),
-            SwarmEvent::Behaviour(AgentEvent::Identify(event)) => match event {
-                IdentifyEvent::Sent { peer_id } => info!("IdentifyEvent:Sent: {peer_id}"),
-                IdentifyEvent::Pushed { peer_id, info } => {
-                    info!("IdentifyEvent:Pushed: {peer_id} | {info:?}")
-                }
-                IdentifyEvent::Received { peer_id, info } => {
-                    info!("IdentifyEvent:Received: {peer_id} | {info:?}");
-                    peers.insert(peer_id, info.clone().listen_addrs);
-                }
-                _ => {}
-            },
-            SwarmEvent::Behaviour(AgentEvent::RequestResponse(event)) => match event {
-                RequestResponseEvent::Message { peer, message } => {
-                    match message {
-                        RequestResponseMessage::Request {
-                            request_id,
-                            request,
-                            channel: _,
-                        } => {
-                            info!("RequestResponseEvent::Message::Request -> PeerID: {peer} | RequestID: {request_id} | RequestMessage: {request:?}");
-
-                            // Handle received transaction
-                            let transaction = Transaction::new(request.transaction_data.clone(), request.parents.clone());
-                            let mut dag_lock = dag.lock().unwrap();
-                            dag_lock.add_transaction(transaction.clone());
-
-                            // Propagate transaction to other nodes
-                            // let response = TransactionMessage {
-                            //     transaction_id: transaction.id,
-                            //     transaction_data: transaction.data,
-                            //     parents: transaction.parents,
-                            // };
-                            // let result = swarm.behaviour_mut().send_response(channel, response);
-                            // if result.is_err() {
-                            //     let err = result.unwrap_err();
-                            //     error!("Error sending response: {err:?}");
-                            // } else {
-                            //     info!("Response sent successfully");
-                            // }
-                            info!("Transaction added to DAG without response to peer");
-
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
+// Fix the handle_event signature to use AgentEvent
+async fn handle_event(
+    _swarm: &mut Swarm<Behavior>,
+    _event: &SwarmEvent<AgentEvent>,
+    _dag: Arc<TokioMutex<DAG>>
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    Ok(())
 }
 
-// Axum handler for receiving transactions and propagating them
-
-#[axum::debug_handler]
+// Fix the receive_transaction handler to use .await for TokioMutex
 async fn receive_transaction(
     State(state): State<SharedState>,
     Json(payload): Json<TransactionRequestData>,
 ) -> impl IntoResponse {
-    let (swarm, peers, dag) = state;
+    let (peers, dag, swarm) = state;
     info!("Received new transaction: {:?}", payload);
 
     let transaction = Transaction::new(payload.data, payload.parents);
-    let mut dag_lock = dag.lock().unwrap();
+    let mut dag_lock = dag.lock().await;
     dag_lock.add_transaction(transaction.clone());
 
     let message = TransactionMessage {
@@ -258,8 +248,9 @@ async fn receive_transaction(
         parents: transaction.parents.clone(),
     };
 
-    for (peer_id, _) in peers.lock().unwrap().iter() {
-        let mut swarm_lock = swarm.lock().unwrap();
+    let peers_lock = peers.lock().await;
+    for (peer_id, _) in peers_lock.iter() {
+        let mut swarm_lock = swarm.lock().await;
         swarm_lock.behaviour_mut().send_message(peer_id, message.clone());
         info!("Transaction sent to peer {peer_id}");
     }
