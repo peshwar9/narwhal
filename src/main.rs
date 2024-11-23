@@ -142,7 +142,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let swarm_task = {
         let dag = dag.clone();
         let swarm_clone = swarm.clone();
-        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new()));
+        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new("peers.json")));
 
         tokio::spawn(async move {
             loop {
@@ -164,7 +164,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Create shared state
-    let peer_manager = Arc::new(TokioMutex::new(PeerManager::new()));
+    let peer_manager = Arc::new(TokioMutex::new(PeerManager::new("peers.json")));
     let state = (
         peer_manager.clone(),
         dag.clone(),

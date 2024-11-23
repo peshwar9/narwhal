@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
 // Define the trait here in behavior.rs
-pub trait PeerManagement {
+pub trait PeerManagement: std::fmt::Debug {
     fn get_peers(&self) -> Vec<PeerId>;
     fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr);
 }
@@ -81,6 +81,7 @@ impl<T: PeerManagement> BehaviorWithContext<T> {
     pub async fn send_transaction_to_peers(&mut self, transaction: TransactionMessage) {
         let peers = {
             let pm = self.context.peer_manager.lock().await;
+            info!("PeerManager internal state: {:?}", pm);
             pm.get_peers()
         };
         

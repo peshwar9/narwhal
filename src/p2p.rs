@@ -1,186 +1,159 @@
+use crate::behavior::PeerManagement;
 use std::collections::HashSet;
 use libp2p::{PeerId, Multiaddr};
-use log::info;
 use std::fs;
-use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
-use std::str::FromStr;
-use crate::behavior::PeerManagement;  // Import the trait from behavior
+use std::path::Path;
+use log::{info, error};
+use std::collections::HashMap;
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct TransactionRequest {
-    transaction_id: String,
-    transaction_data: String,
-    parents: Vec<String>,
+// Custom serialization wrapper for PeerId
+#[derive(Debug, Serialize, Deserialize)]
+struct SerializablePeerId(String);
+
+impl From<PeerId> for SerializablePeerId {
+    fn from(peer_id: PeerId) -> Self {
+        SerializablePeerId(peer_id.to_string())
+    }
+}
+
+impl TryFrom<SerializablePeerId> for PeerId {
+    type Error = String;
+    fn try_from(spid: SerializablePeerId) -> Result<Self, Self::Error> {
+        spid.0.parse().map_err(|e| format!("Failed to parse PeerId: {}", e))
+    }
+}
+
+// Custom serialization wrapper for Multiaddr
+#[derive(Debug, Serialize, Deserialize)]
+struct SerializableMultiaddr(String);
+
+impl From<Multiaddr> for SerializableMultiaddr {
+    fn from(addr: Multiaddr) -> Self {
+        SerializableMultiaddr(addr.to_string())
+    }
+}
+
+impl TryFrom<SerializableMultiaddr> for Multiaddr {
+    type Error = String;
+    fn try_from(sma: SerializableMultiaddr) -> Result<Self, Self::Error> {
+        sma.0.parse().map_err(|e| format!("Failed to parse Multiaddr: {}", e))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct SerializablePeer {
-    peer_id: String,
-    addresses: Vec<String>,
-    last_seen: u64,
+pub struct PeerStorage {
+    peers: Vec<SerializablePeerId>,
+    addresses: HashMap<String, SerializableMultiaddr>,
 }
 
-#[derive(Debug)]
-pub struct PeerData {
-    pub addresses: Vec<Multiaddr>,
-    pub last_seen: u64,
+impl Default for PeerStorage {
+    fn default() -> Self {
+        Self {
+            peers: Vec::new(),
+            addresses: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct PeerManager {
     pub peers: HashSet<PeerId>,
-    pub peer_data: std::collections::HashMap<PeerId, PeerData>,
-    storage_path: PathBuf,
+    pub peer_addresses: HashMap<PeerId, Multiaddr>,
+    storage_path: String,
 }
 
 impl PeerManager {
-    pub fn new() -> Self {
-        let storage_path = PathBuf::from("peers.json");
+    pub fn new(storage_path: &str) -> Self {
         info!("Loading peers from: {:?}", storage_path);
-        let peer_data = Self::load_peers(&storage_path).unwrap_or_default();
-        let peers = peer_data.keys().cloned().collect();
+        let storage = Self::load_from_disk(storage_path);
         
-        let manager = PeerManager {
-            peers,
-            peer_data,
-            storage_path,
-        };
+        let mut peers = HashSet::new();
+        let mut peer_addresses = HashMap::new();
         
-        // Log the loaded peers
-        info!("Loaded {} peers from storage", manager.peers.len());
-        for (peer_id, data) in &manager.peer_data {
-            info!("Loaded peer: {} with {} addresses", peer_id, data.addresses.len());
+        // Convert from storage format to runtime format
+        for spid in storage.peers {
+            if let Ok(peer_id) = PeerId::try_from(spid) {
+                peers.insert(peer_id);
+            }
         }
         
-        manager
+        for (peer_str, sma) in storage.addresses {
+            if let (Ok(peer_id), Ok(addr)) = (peer_str.parse(), Multiaddr::try_from(sma)) {
+                peer_addresses.insert(peer_id, addr);
+            }
+        }
+        
+        Self {
+            peers,
+            peer_addresses,
+            storage_path: storage_path.to_string(),
+        }
     }
 
-    pub fn load_peers(path: &PathBuf) -> Result<std::collections::HashMap<PeerId, PeerData>, Box<dyn std::error::Error>> {
-        if path.exists() {
-            let data = fs::read_to_string(path)?;
-            info!("Read peer data from disk: {}", data);
-            let serialized_peers: Vec<SerializablePeer> = serde_json::from_str(&data)?;
-            
-            let mut peer_data = std::collections::HashMap::new();
-            for sp in serialized_peers {
-                if let (Ok(peer_id), Ok(addresses)) = (
-                    PeerId::from_str(&sp.peer_id),
-                    sp.addresses.into_iter().map(|a| Multiaddr::from_str(&a)).collect::<Result<Vec<_>, _>>()
-                ) {
-                    peer_data.insert(peer_id, PeerData {
-                        addresses,
-                        last_seen: sp.last_seen,
-                    });
+    fn load_from_disk(path: &str) -> PeerStorage {
+        match fs::read_to_string(path) {
+            Ok(contents) => {
+                match serde_json::from_str(&contents) {
+                    Ok(storage) => {
+                        info!("Loaded peer storage successfully");
+                        storage
+                    }
+                    Err(e) => {
+                        error!("Error parsing peer storage: {}", e);
+                        PeerStorage::default()
+                    }
                 }
             }
-            Ok(peer_data)
-        } else {
-            Ok(std::collections::HashMap::new())
+            Err(e) => {
+                info!("No existing peer storage found: {}", e);
+                PeerStorage::default()
+            }
         }
     }
 
-    pub fn save_peers(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let serializable: Vec<SerializablePeer> = self.peer_data
-            .iter()
-            .map(|(peer_id, data)| SerializablePeer {
-                peer_id: peer_id.to_string(),
-                addresses: data.addresses.iter().map(|a| a.to_string()).collect(),
-                last_seen: data.last_seen,
-            })
-            .collect();
-            
-        let data = serde_json::to_string_pretty(&serializable)?;
-        info!("Writing peer data to disk: {}", data);
-        fs::write(&self.storage_path, data)?;
-        Ok(())
-    }
+    fn save_to_disk(&self) {
+        let storage = PeerStorage {
+            peers: self.peers.iter().cloned().map(SerializablePeerId::from).collect(),
+            addresses: self.peer_addresses.iter()
+                .map(|(k, v)| (k.to_string(), SerializableMultiaddr::from(v.clone())))
+                .collect(),
+        };
 
-    pub fn has_peer(&self, peer_id: &PeerId) -> bool {
-        self.peers.contains(peer_id)
-    }
-
-    pub fn add_peer(&mut self, peer_id: PeerId) {
-        if !self.has_peer(&peer_id) {
-            self.peers.insert(peer_id);
-            
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            self.peer_data.insert(peer_id, PeerData {
-                addresses: Vec::new(),
-                last_seen: now,
-            });
-
-            if let Err(e) = self.save_peers() {
-                info!("Failed to save peers to disk: {}", e);
+        match serde_json::to_string_pretty(&storage) {
+            Ok(json) => {
+                if let Err(e) = fs::write(&self.storage_path, json) {
+                    error!("Failed to save peers to disk: {}", e);
+                }
             }
-
-            info!("PeerManager: Added peer {:?}, total peers: {}", peer_id, self.peers.len());
+            Err(e) => error!("Failed to serialize peer storage: {}", e),
         }
     }
 
     pub fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
-        if let Some(peer_data) = self.peer_data.get_mut(&peer_id) {
-            if !peer_data.addresses.contains(&addr) {
-                peer_data.addresses.push(addr.clone());
-                info!("Added new address {} for peer {}", addr, peer_id);
-            }
-            peer_data.last_seen = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-        } else {
-            self.add_peer(peer_id);
-            if let Some(peer_data) = self.peer_data.get_mut(&peer_id) {
-                peer_data.addresses.push(addr.clone());
-                info!("Added first address {} for new peer {}", addr, peer_id);
-            }
-        }
-
-        if let Err(e) = self.save_peers() {
-            info!("Failed to save peers to disk: {}", e);
-        }
+        self.peers.insert(peer_id);
+        self.peer_addresses.insert(peer_id, addr.clone());
+        self.save_to_disk();
+        info!("Added and saved peer {:?} with address {:?}", peer_id, addr);
     }
 
     pub fn remove_peer(&mut self, peer_id: &PeerId) {
-        if self.has_peer(peer_id) {
-            self.peers.remove(peer_id);
-            self.peer_data.remove(peer_id);
-
-            if let Err(e) = self.save_peers() {
-                info!("Failed to save peers to disk: {}", e);
-            }
-
-            info!("PeerManager: Removed peer {:?}, total peers: {}", peer_id, self.peers.len());
-        }
+        self.peers.remove(peer_id);
+        self.peer_addresses.remove(peer_id);
+        self.save_to_disk();
+        info!("Removed and saved peer {:?}", peer_id);
     }
 
-    pub fn get_peers(&self) -> Vec<PeerId> {
-        // Filter out peers that haven't been seen in the last 24 hours
-        let day_ago = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() - 86400;
-
-        let peers = self.peer_data
-            .iter()
-            .filter(|(_, data)| data.last_seen > day_ago)
-            .map(|(peer_id, _)| *peer_id)
-            .collect::<Vec<_>>();
-
-        info!("PeerManager::get_peers returning {} peers: {:?}", peers.len(), peers);
-        peers
+    pub fn get_peers(&self) -> HashSet<PeerId> {
+        info!("Retrieved {} peers", self.peers.len());
+        self.peers.clone()
     }
 
-    pub fn get_peer_addresses(&self, peer_id: &PeerId) -> Option<Vec<Multiaddr>> {
-        self.peer_data.get(peer_id).map(|data| data.addresses.clone())
+    pub fn get_peer_addr(&self, peer_id: &PeerId) -> Option<&Multiaddr> {
+        self.peer_addresses.get(peer_id)
     }
 }
 
-// Then implement it for PeerManager
 impl PeerManagement for PeerManager {
     fn get_peers(&self) -> Vec<PeerId> {
         self.peers.iter().cloned().collect()
