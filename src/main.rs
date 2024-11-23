@@ -251,8 +251,9 @@ async fn receive_transaction(
     let peers_lock = peers.lock().await;
     for (peer_id, _) in peers_lock.iter() {
         let mut swarm_lock = swarm.lock().await;
-        swarm_lock.behaviour_mut().send_message(peer_id, message.clone());
-        info!("Transaction {} propagated to peer {}", transaction.id, peer_id);
+        let request_id = swarm_lock.behaviour_mut().send_message(&peer_id, message.clone());
+        info!("Transaction {} being sent to peer {} with request_id {:?}", 
+            transaction.id, peer_id, request_id);
     }
 
     axum::response::Response::builder()

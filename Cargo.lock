@@ -2074,13 +2074,16 @@ dependencies = [
 name = "narhwal"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "env_logger",
  "libp2p",
  "log",
  "serde",
+ "serde_json",
  "sha2",
  "tokio",
+ "unsigned-varint 0.7.2",
 ]
 
 [[package]]
@@ -3330,6 +3333,10 @@ name = "unsigned-varint"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6889a77d49f1f013504cec6bf97a2c730394adedaeb1deb5ea08949a50541105"
+dependencies = [
+ "futures-io",
+ "futures-util",
+]
 
 [[package]]
 name = "unsigned-varint"

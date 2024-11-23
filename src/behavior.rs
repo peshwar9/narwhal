@@ -3,7 +3,7 @@ use libp2p::kad::{
     store::MemoryStore as KademliaInMemory, Behaviour as KademliaBehavior, Event as KademliaEvent,
 };
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{Multiaddr, PeerId};
+use libp2p::{futures, Multiaddr, PeerId};
 
 use libp2p::identify::{Behaviour as IdentifyBehavior, Event as IdentifyEvent};
 
@@ -16,6 +16,97 @@ use crate::message::TransactionMessage; // Using TransactionMessage instead of G
 use narhwal::p2p::PeerManager;  // Add this import at the top
 
 use log::{info, debug, error};
+
+//use libp2p::request_response::{RequestResponseConfig, ProtocolSupport};
+use std::iter;
+
+use async_trait::async_trait;
+use libp2p::request_response::Codec as RequestResponseCodec;
+use futures::prelude::*;
+use std::io;
+
+use libp2p::futures::io::{AsyncRead, AsyncWrite};
+use libp2p::futures::AsyncReadExt;
+use libp2p::futures::AsyncWriteExt;
+use unsigned_varint;
+use serde_json;
+
+const PROTOCOL_NAME: &str = "/transaction/1.0.0";
+
+#[derive(Debug, Clone)]
+struct TransactionCodec();
+
+#[async_trait]
+impl RequestResponseCodec for TransactionCodec {
+    type Protocol = &'static str;
+    type Request = TransactionMessage;
+    type Response = TransactionMessage;
+
+    async fn read_request<T>(&mut self, _: &Self::Protocol, io: &mut T) -> io::Result<Self::Request>
+    where
+        T: libp2p::futures::AsyncRead + Unpin + Send,
+    {
+        let vec = read_length_prefixed(io).await?;
+        serde_json::from_slice(&vec)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
+
+    async fn read_response<T>(&mut self, _: &Self::Protocol, io: &mut T) -> io::Result<Self::Response>
+    where
+        T: libp2p::futures::AsyncRead + Unpin + Send,
+    {
+        let vec = read_length_prefixed(io).await?;
+        serde_json::from_slice(&vec)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    }
+
+    async fn write_request<T>(&mut self, _: &Self::Protocol, io: &mut T, req: Self::Request) -> io::Result<()>
+    where
+        T: libp2p::futures::AsyncWrite + Unpin + Send,
+    {
+        let vec = serde_json::to_vec(&req)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        write_length_prefixed(io, vec).await
+    }
+
+    async fn write_response<T>(&mut self, _: &Self::Protocol, io: &mut T, res: Self::Response) -> io::Result<()>
+    where
+        T: libp2p::futures::AsyncWrite + Unpin + Send,
+    {
+        let vec = serde_json::to_vec(&res)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        write_length_prefixed(io, vec).await
+    }
+}
+
+// Helper functions for length-prefixed encoding/decoding
+async fn read_length_prefixed<T>(io: &mut T) -> io::Result<Vec<u8>>
+where
+    T: libp2p::futures::AsyncRead + Unpin + Send,
+{
+    let length = unsigned_varint::aio::read_usize(&mut *io).await.map_err(|e| {
+        io::Error::new(io::ErrorKind::Other, e)
+    })?;
+    let mut vec = vec![0; length];
+    io.read_exact(&mut vec).await?;
+    Ok(vec)
+}
+
+async fn write_length_prefixed<T>(io: &mut T, vec: Vec<u8>) -> io::Result<()>
+where
+    T: libp2p::futures::AsyncWrite + Unpin + Send,
+{
+    // Create a buffer for the length encoding
+    let mut length_buf = [0u8; 10];  // 10 bytes is enough for usize
+    let encoded = unsigned_varint::encode::usize(vec.len(), &mut length_buf);
+    
+    // Write the length prefix
+    io.write_all(encoded).await?;
+    // Write the actual data
+    io.write_all(&vec).await?;
+    io.flush().await?;
+    Ok(())
+}
 
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "Event")]
@@ -31,7 +122,11 @@ impl Behavior {
         identify: IdentifyBehavior,
         rr: RequestResponseBehavior<TransactionMessage, TransactionMessage>,
     ) -> Self {
-        Self { kad, identify, rr }
+        Self { 
+            kad, 
+            identify, 
+            rr 
+        }
     }
 
     pub fn _register_addr_kad(&mut self, peer_id: &PeerId, addr: Multiaddr) -> RoutingUpdate {
@@ -77,12 +172,11 @@ impl Behavior {
                 // 1. Add the transaction to your DAG
                 // 2. Propagate to other peers if needed
             },
-            RequestResponseEvent::InboundFailure { 
-                peer,
-                error,
-                .. 
-            } => {
-                error!("Inbound request failed from peer {}: {:?}", peer, error);
+            RequestResponseEvent::OutboundFailure { peer, error, .. } => {
+                error!("Failed to send transaction to peer {}: {:?}", peer, error);
+            },
+            RequestResponseEvent::ResponseSent { peer, .. } => {
+                info!("Transaction successfully sent to peer {}", peer);
             },
             _ => {} // Handle other events if needed
         }
