@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Serialize, Deserialize};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
 use log::info;
@@ -46,8 +46,6 @@ use libp2p::kad::{
 use libp2p::request_response::{
     Config as RequestResponseConfig,
     ProtocolSupport as RequestResponseProtocolSupport,
-    Event as RequestResponseEvent,
-    Message as RequestResponseMessage
 };
 use narhwal::p2p::PeerManager;
 use libp2p::request_response::cbor::Behaviour as RequestResponseBehavior;
@@ -69,7 +67,7 @@ use libp2p::core::ConnectedPoint;
 
 type _PeerMap = Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>;
 type SharedState = (
-    Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>,
+    Arc<TokioMutex<PeerManager>>,
     Arc<TokioMutex<DAG>>,
     Arc<TokioMutex<Swarm<Behavior>>>
 );
@@ -151,8 +149,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Create shared state
-    let peers = Arc::new(TokioMutex::new(HashMap::new()));
-    let state = (peers.clone(), dag.clone(), swarm.clone());
+    let peer_manager = Arc::new(TokioMutex::new(PeerManager::new()));
+    let state = (
+        peer_manager.clone(),
+        dag.clone(),
+        swarm.clone()
+    );
 
     // Initialize the Axum server with state
     let app = Router::new()
@@ -231,14 +233,14 @@ async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -
 
 // Fix the handle_event signature to use AgentEvent
 async fn handle_event(
-    swarm: &mut Swarm<Behavior>,
+    _swarm: &mut Swarm<Behavior>,
     event: &SwarmEvent<AgentEvent>,
     peer_manager: &SharedPeerManager,
     _dag: Arc<TokioMutex<DAG>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     match event {
         SwarmEvent::Behaviour(AgentEvent::Identify(identify_event)) => {
-            if let IdentifyEvent::Received { peer_id, info } = identify_event {
+            if let IdentifyEvent::Received { peer_id, info: _ } = identify_event {
                 let mut pm = peer_manager.lock().await;
                 pm.peers.insert(*peer_id);
                 info!("Peer identified and added to PeerManager: {:?}", peer_id);
@@ -268,16 +270,14 @@ async fn receive_transaction(
     State(state): State<SharedState>,
     Json(payload): Json<TransactionRequestData>,
 ) -> impl IntoResponse {
-    let (_peers, dag, swarm) = state;
+    let (peer_manager, dag, swarm) = state;
     info!("Node received new transaction: {:?}", payload);
 
-    // Get current peer list from the swarm's PeerManager
+    // Get current peer list from PeerManager
     let peers_list = {
         let mut swarm_lock = swarm.lock().await;
-        swarm_lock.behaviour_mut()
-            .get_peers()
-            .into_iter()
-            .collect::<Vec<_>>()
+        let pm = peer_manager.lock().await;
+        swarm_lock.behaviour_mut().get_peers(&pm)
     };
     
     info!("Peers available for transaction: {:?}", peers_list);
@@ -308,9 +308,9 @@ async fn receive_transaction(
     let peer_count = peers_list.len();
 
     // Send to each peer
-    for peer_id in peers_list {
+    for peer_id in &peers_list {
         info!("Sending transaction to peer: {:?}", peer_id);
-        let outbound_id = swarm_lock.behaviour_mut().send_message(&peer_id, message.clone());
+        let outbound_id = swarm_lock.behaviour_mut().send_message(peer_id, message.clone());
         info!("Transaction {} propagated to peer {} with request ID {:?}", 
             transaction.id, peer_id, outbound_id);
     }

@@ -180,16 +180,9 @@ impl From<RequestResponseEvent<TransactionMessage, TransactionMessage>> for Even
 }
 
 impl Behavior {
-    pub fn get_peers(&mut self) -> HashSet<PeerId> {
-        self.kad
-            .kbuckets()
-            .into_iter()
-            .flat_map(|bucket| {
-                bucket.iter()
-                    .map(|entry| *entry.node.key.preimage())
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+    pub fn get_peers(&mut self, peer_manager: &PeerManager) -> HashSet<PeerId> {
+        // Convert Vec<PeerId> to HashSet<PeerId>
+        peer_manager.get_peers().into_iter().collect()
     }
 }
 
