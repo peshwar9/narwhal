@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransactionMessage {
     pub transaction_id: String,   // Unique identifier for the transaction
     pub transaction_data: String, // Data associated with the transaction (e.g., transaction details)

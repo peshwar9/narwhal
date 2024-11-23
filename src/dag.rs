@@ -35,3 +35,9 @@ impl DAG {
         }
     }
 }
+
+impl Default for DAG {
+    fn default() -> Self {
+    Self::new()
+    }
+    }

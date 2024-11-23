@@ -13,6 +13,7 @@ use libp2p::request_response::{
 };
 
 use crate::message::TransactionMessage; // Using TransactionMessage instead of GreetRequest
+use narhwal::p2p::PeerManager;  // Add this import at the top
 
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "Event")]
@@ -31,25 +32,27 @@ impl Behavior {
         Self { kad, identify, rr }
     }
 
-    pub fn register_addr_kad(&mut self, peer_id: &PeerId, addr: Multiaddr) -> RoutingUpdate {
+    pub fn _register_addr_kad(&mut self, peer_id: &PeerId, addr: Multiaddr) -> RoutingUpdate {
         self.kad.add_address(peer_id, addr)
     }
 
-    pub fn register_addr_rr(&mut self, peer_id: &PeerId, addr: Multiaddr) -> bool {
-        self.rr.add_address(peer_id, addr)
+    pub fn _send_transaction_to_peers(&mut self, transaction: TransactionMessage, peer_manager: &PeerManager) {
+        for peer in peer_manager.get_peers() {
+            self.rr.send_request(&peer, transaction.clone());
+        }
     }
 
-    // Send a TransactionMessage
     pub fn send_message(
         &mut self,
         peer_id: &PeerId,
         message: TransactionMessage,
     ) -> OutboundRequestId {
+        // Direct call to the request-response behavior's send_request
         self.rr.send_request(peer_id, message)
     }
 
     // Send a response with a TransactionMessage
-    pub fn send_response(
+    pub fn _send_response(
         &mut self,
         ch: RequestResponseChannel<TransactionMessage>,
         rs: TransactionMessage,
@@ -63,10 +66,11 @@ impl Behavior {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum Event {
     Identify(IdentifyEvent),
     Kad(KademliaEvent),
-    RequestResponse(RequestResponseEvent<TransactionMessage, TransactionMessage>), // Changed from GreetRequest/GreetResponse
+    RequestResponse(RequestResponseEvent<TransactionMessage, TransactionMessage>),
 }
 
 impl From<IdentifyEvent> for Event {
