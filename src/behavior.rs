@@ -81,18 +81,19 @@ impl<T: PeerManagement> BehaviorWithContext<T> {
     pub async fn send_transaction_to_peers(&mut self, transaction: TransactionMessage) {
         let peers = {
             let pm = self.context.peer_manager.lock().await;
-            info!("PeerManager internal state: {:?}", pm);
+            info!("PeerManager state before sending transaction: {:?}", pm);
             pm.get_peers()
         };
+        
+        info!("Found {} peers for transaction propagation", peers.len());
         
         if peers.is_empty() {
             info!("No peers available to send transaction to");
             return;
         }
         
-        info!("Sending transaction to {} peers", peers.len());
         for peer in &peers {
-            info!("Sending transaction to peer: {:?}", peer);
+            info!("Attempting to send transaction to peer: {:?}", peer);
             self.behavior.rr.send_request(peer, transaction.clone());
         }
     }
