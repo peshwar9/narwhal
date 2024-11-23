@@ -15,6 +15,8 @@ use libp2p::request_response::{
 use crate::message::TransactionMessage; // Using TransactionMessage instead of GreetRequest
 use narhwal::p2p::PeerManager;  // Add this import at the top
 
+use log::{info, debug, error};
+
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "Event")]
 pub(crate) struct Behavior {
@@ -62,6 +64,40 @@ impl Behavior {
 
     pub fn set_server_mode(&mut self) {
         self.kad.set_mode(Some(libp2p::kad::Mode::Server))
+    }
+
+    // Add this method to handle incoming messages
+    fn handle_request_response_event(&mut self, event: RequestResponseEvent<TransactionMessage, TransactionMessage>) {
+        match event {
+            RequestResponseEvent::Message { 
+                peer, 
+                message 
+            } => {
+                info!("Received transaction from peer {}: {:?}", peer, message);
+                // 1. Add the transaction to your DAG
+                // 2. Propagate to other peers if needed
+            },
+            RequestResponseEvent::InboundFailure { 
+                peer,
+                error,
+                .. 
+            } => {
+                error!("Inbound request failed from peer {}: {:?}", peer, error);
+            },
+            _ => {} // Handle other events if needed
+        }
+    }
+
+    fn on_swarm_event(&mut self, event: Event) {
+        match event {
+            Event::RequestResponse(e) => self.handle_request_response_event(e),
+            Event::Kad(e) => {
+                debug!("Kad event: {:?}", e);
+            },
+            Event::Identify(e) => {
+                debug!("Identify event: {:?}", e);
+            }
+        }
     }
 }
 

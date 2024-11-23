@@ -236,7 +236,7 @@ async fn receive_transaction(
     Json(payload): Json<TransactionRequestData>,
 ) -> impl IntoResponse {
     let (peers, dag, swarm) = state;
-    info!("Received new transaction: {:?}", payload);
+    info!("Node received new transaction: {:?}", payload);
 
     let transaction = Transaction::new(payload.data, payload.parents);
     let mut dag_lock = dag.lock().await;
@@ -252,7 +252,7 @@ async fn receive_transaction(
     for (peer_id, _) in peers_lock.iter() {
         let mut swarm_lock = swarm.lock().await;
         swarm_lock.behaviour_mut().send_message(peer_id, message.clone());
-        info!("Transaction sent to peer {peer_id}");
+        info!("Transaction {} propagated to peer {}", transaction.id, peer_id);
     }
 
     axum::response::Response::builder()
