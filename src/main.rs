@@ -49,7 +49,7 @@ use libp2p::request_response::{
     Event as RequestResponseEvent,
     Message as RequestResponseMessage
 };
-
+use narhwal::p2p::PeerManager;
 use libp2p::request_response::cbor::Behaviour as RequestResponseBehavior;
 
 mod behavior;
@@ -63,12 +63,18 @@ use message::TransactionMessage;
 use narhwal::transaction::Transaction;
 use narhwal::dag::DAG;
 
+use serde_json::json;
+
+use libp2p::core::ConnectedPoint;
+
 type _PeerMap = Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>;
 type SharedState = (
     Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>,
     Arc<TokioMutex<DAG>>,
     Arc<TokioMutex<Swarm<Behavior>>>
 );
+
+type SharedPeerManager = Arc<TokioMutex<PeerManager>>;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TransactionRequestData {
@@ -123,6 +129,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let swarm_task = {
         let dag = dag.clone();
         let swarm_clone = swarm.clone();
+        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new()));
+
         tokio::spawn(async move {
             loop {
                 let event = {
@@ -133,7 +141,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Create a new block to handle events
                 {
                     let mut swarm = swarm_clone.lock().await;
-                    if let Err(e) = handle_event(&mut swarm, &event, dag.clone()).await {
+                    if let Err(e) = handle_event(&mut swarm, &event, &peer_manager, dag.clone()).await {
                         error!("Error handling swarm event: {}", e);
                         break;
                     }
@@ -223,10 +231,35 @@ async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -
 
 // Fix the handle_event signature to use AgentEvent
 async fn handle_event(
-    _swarm: &mut Swarm<Behavior>,
-    _event: &SwarmEvent<AgentEvent>,
+    swarm: &mut Swarm<Behavior>,
+    event: &SwarmEvent<AgentEvent>,
+    peer_manager: &SharedPeerManager,
     _dag: Arc<TokioMutex<DAG>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    match event {
+        SwarmEvent::Behaviour(AgentEvent::Identify(identify_event)) => {
+            if let IdentifyEvent::Received { peer_id, info } = identify_event {
+                let mut pm = peer_manager.lock().await;
+                pm.peers.insert(*peer_id);
+                info!("Peer identified and added to PeerManager: {:?}", peer_id);
+                info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
+            }
+        }
+        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+            info!("Connection established with peer: {:?}", peer_id);
+            let mut pm = peer_manager.lock().await;
+            if let ConnectedPoint::Dialer { address: _, .. } = endpoint {
+                pm.peers.insert(*peer_id);
+            }
+        }
+        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+            info!("Connection closed with peer: {:?}", peer_id);
+            let mut pm = peer_manager.lock().await;
+            pm.peers.remove(peer_id);
+            info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -235,29 +268,61 @@ async fn receive_transaction(
     State(state): State<SharedState>,
     Json(payload): Json<TransactionRequestData>,
 ) -> impl IntoResponse {
-    let (peers, dag, swarm) = state;
+    let (_peers, dag, swarm) = state;
     info!("Node received new transaction: {:?}", payload);
 
+    // Get current peer list from the swarm's PeerManager
+    let peers_list = {
+        let mut swarm_lock = swarm.lock().await;
+        swarm_lock.behaviour_mut()
+            .get_peers()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    
+    info!("Peers available for transaction: {:?}", peers_list);
+
+    // Create the transaction
     let transaction = Transaction::new(payload.data, payload.parents);
+
+    // Add the transaction to the DAG
     let mut dag_lock = dag.lock().await;
     dag_lock.add_transaction(transaction.clone());
 
+    if peers_list.is_empty() {
+        return Json(json!({
+            "status": "warning",
+            "message": "Transaction received but no peers available for propagation"
+        })).into_response();
+    }
+
+    // Prepare the transaction message
     let message = TransactionMessage {
         transaction_id: transaction.id.clone(),
         transaction_data: transaction.data.clone(),
         parents: transaction.parents.clone(),
     };
 
-    let peers_lock = peers.lock().await;
-    for (peer_id, _) in peers_lock.iter() {
-        let mut swarm_lock = swarm.lock().await;
-        swarm_lock.behaviour_mut().send_message(peer_id, message.clone());
-        info!("Transaction {} propagated to peer {}", transaction.id, peer_id);
+    // Lock swarm to propagate the transaction
+    let mut swarm_lock = swarm.lock().await;
+    let peer_count = peers_list.len();
+
+    // Send to each peer
+    for peer_id in peers_list {
+        info!("Sending transaction to peer: {:?}", peer_id);
+        let outbound_id = swarm_lock.behaviour_mut().send_message(&peer_id, message.clone());
+        info!("Transaction {} propagated to peer {} with request ID {:?}", 
+            transaction.id, peer_id, outbound_id);
     }
 
-    axum::response::Response::builder()
-        .status(200)
-        .body(axum::body::Body::from("Transaction received and being propagated"))
-        .unwrap()
+    // Return a successful HTTP response
+    Json(json!({
+        "status": "success",
+        "message": "Transaction received and propagated",
+        "peer_count": peer_count
+    })).into_response()
 }
+
+
+
 
