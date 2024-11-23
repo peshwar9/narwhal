@@ -47,23 +47,27 @@ use libp2p::request_response::{
     Config as RequestResponseConfig,
     ProtocolSupport as RequestResponseProtocolSupport,
 };
-use narhwal::p2p::PeerManager;
+use narwhal::p2p::PeerManager;
 use libp2p::request_response::cbor::Behaviour as RequestResponseBehavior;
 
 mod behavior;
 use behavior::{
     Behavior,
-    Event as AgentEvent
+    Event as AgentEvent,
+    BehaviorContext,
+    PeerManagement,
 };
 
 mod message;
 use message::TransactionMessage;
-use narhwal::transaction::Transaction;
-use narhwal::dag::DAG;
+use narwhal::transaction::Transaction;
+use narwhal::dag::DAG;
 
 use serde_json::json;
 
 use libp2p::core::ConnectedPoint;
+
+use axum::debug_handler;
 
 type _PeerMap = Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>;
 type SharedState = (
@@ -78,6 +82,17 @@ type SharedPeerManager = Arc<TokioMutex<PeerManager>>;
 struct TransactionRequestData {
     data: String,
     parents: Vec<String>,
+}
+
+pub struct Node<T: PeerManagement> {
+    swarm: Swarm<Behavior>,
+    context: Arc<BehaviorContext<T>>,
+}
+
+impl<T: PeerManagement> Node<T> {
+    pub fn new(swarm: Swarm<Behavior>, context: Arc<BehaviorContext<T>>) -> Self {
+        Self { swarm, context }
+    }
 }
 
 #[tokio::main]
@@ -190,7 +205,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 // Function to build and configure the swarm
 async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -> Result<Swarm<Behavior>, Box<dyn std::error::Error>> {
-    let swarm = SwarmBuilder::with_existing_identity(local_key.clone())
+    let behavior = SwarmBuilder::with_existing_identity(local_key.clone())
         .with_tokio()
         .with_tcp(
             TcpConfig::default(), 
@@ -223,12 +238,13 @@ async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -
                 RequestResponseConfig::default()
             );
 
+            // Create behavior directly
             Behavior::new(kad, identify, rr_behavior)
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30)))
         .build();
 
-    Ok(swarm)
+    Ok(behavior)
 }
 
 // Fix the handle_event signature to use AgentEvent
@@ -266,10 +282,11 @@ async fn handle_event(
 }
 
 // Fix the receive_transaction handler to use .await for TokioMutex
+#[debug_handler]
 async fn receive_transaction(
     State(state): State<SharedState>,
     Json(payload): Json<TransactionRequestData>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let (peer_manager, dag, swarm) = state;
     info!("Node received new transaction: {:?}", payload);
 
@@ -277,7 +294,7 @@ async fn receive_transaction(
     let peers_list = {
         let mut swarm_lock = swarm.lock().await;
         let pm = peer_manager.lock().await;
-        swarm_lock.behaviour_mut().get_peers(&pm)
+        swarm_lock.behaviour_mut().get_peers(&*pm)
     };
     
     info!("Peers available for transaction: {:?}", peers_list);
@@ -321,6 +338,18 @@ async fn receive_transaction(
         "message": "Transaction received and propagated",
         "peer_count": peer_count
     })).into_response()
+}
+
+impl PeerManagement for PeerManager {
+    fn get_peers(&self) -> Vec<PeerId> {
+        self.peers.iter().cloned().collect()
+    }
+
+    fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        // Implement this method based on your PeerManager's functionality
+        self.peers.insert(peer_id);
+        // Add address handling if needed
+    }
 }
 
 

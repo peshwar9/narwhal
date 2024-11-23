@@ -2071,7 +2071,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "narhwal"
+name = "narwhal"
 version = "0.1.0"
 dependencies = [
  "axum",

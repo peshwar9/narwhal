@@ -5,6 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 use std::str::FromStr;
+use crate::behavior::PeerManagement;  // Import the trait from behavior
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TransactionRequest {
@@ -21,34 +22,44 @@ struct SerializablePeer {
 }
 
 #[derive(Debug)]
-struct PeerData {
-    addresses: Vec<Multiaddr>,
-    last_seen: u64,
+pub struct PeerData {
+    pub addresses: Vec<Multiaddr>,
+    pub last_seen: u64,
 }
 
 #[derive(Debug)]
 pub struct PeerManager {
     pub peers: HashSet<PeerId>,
-    peer_data: std::collections::HashMap<PeerId, PeerData>,
+    pub peer_data: std::collections::HashMap<PeerId, PeerData>,
     storage_path: PathBuf,
 }
 
 impl PeerManager {
     pub fn new() -> Self {
         let storage_path = PathBuf::from("peers.json");
+        info!("Loading peers from: {:?}", storage_path);
         let peer_data = Self::load_peers(&storage_path).unwrap_or_default();
         let peers = peer_data.keys().cloned().collect();
         
-        PeerManager {
+        let manager = PeerManager {
             peers,
             peer_data,
             storage_path,
+        };
+        
+        // Log the loaded peers
+        info!("Loaded {} peers from storage", manager.peers.len());
+        for (peer_id, data) in &manager.peer_data {
+            info!("Loaded peer: {} with {} addresses", peer_id, data.addresses.len());
         }
+        
+        manager
     }
 
-    fn load_peers(path: &PathBuf) -> Result<std::collections::HashMap<PeerId, PeerData>, Box<dyn std::error::Error>> {
+    pub fn load_peers(path: &PathBuf) -> Result<std::collections::HashMap<PeerId, PeerData>, Box<dyn std::error::Error>> {
         if path.exists() {
             let data = fs::read_to_string(path)?;
+            info!("Read peer data from disk: {}", data);
             let serialized_peers: Vec<SerializablePeer> = serde_json::from_str(&data)?;
             
             let mut peer_data = std::collections::HashMap::new();
@@ -69,7 +80,7 @@ impl PeerManager {
         }
     }
 
-    fn save_peers(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_peers(&self) -> Result<(), Box<dyn std::error::Error>> {
         let serializable: Vec<SerializablePeer> = self.peer_data
             .iter()
             .map(|(peer_id, data)| SerializablePeer {
@@ -80,6 +91,7 @@ impl PeerManager {
             .collect();
             
         let data = serde_json::to_string_pretty(&serializable)?;
+        info!("Writing peer data to disk: {}", data);
         fs::write(&self.storage_path, data)?;
         Ok(())
     }
@@ -113,7 +125,8 @@ impl PeerManager {
     pub fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
         if let Some(peer_data) = self.peer_data.get_mut(&peer_id) {
             if !peer_data.addresses.contains(&addr) {
-                peer_data.addresses.push(addr);
+                peer_data.addresses.push(addr.clone());
+                info!("Added new address {} for peer {}", addr, peer_id);
             }
             peer_data.last_seen = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -122,7 +135,8 @@ impl PeerManager {
         } else {
             self.add_peer(peer_id);
             if let Some(peer_data) = self.peer_data.get_mut(&peer_id) {
-                peer_data.addresses.push(addr);
+                peer_data.addresses.push(addr.clone());
+                info!("Added first address {} for new peer {}", addr, peer_id);
             }
         }
 
@@ -163,5 +177,16 @@ impl PeerManager {
 
     pub fn get_peer_addresses(&self, peer_id: &PeerId) -> Option<Vec<Multiaddr>> {
         self.peer_data.get(peer_id).map(|data| data.addresses.clone())
+    }
+}
+
+// Then implement it for PeerManager
+impl PeerManagement for PeerManager {
+    fn get_peers(&self) -> Vec<PeerId> {
+        self.peers.iter().cloned().collect()
+    }
+
+    fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        self.add_peer_with_addr(peer_id, addr);
     }
 }
