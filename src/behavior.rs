@@ -1,33 +1,34 @@
 use libp2p::kad::RoutingUpdate;
-use libp2p::{Multiaddr, PeerId};
-use libp2p::swarm::NetworkBehaviour;
 use libp2p::kad::{
-    Behaviour as KademliaBehavior,
-    Event as KademliaEvent,
-    store::MemoryStore as KademliaInMemory,
+    store::MemoryStore as KademliaInMemory, Behaviour as KademliaBehavior, Event as KademliaEvent,
 };
+use libp2p::swarm::NetworkBehaviour;
+use libp2p::{Multiaddr, PeerId};
 
-use libp2p::identify::{
-    Behaviour as IdentifyBehavior, 
-    Event as IdentifyEvent,
-};
+use libp2p::identify::{Behaviour as IdentifyBehavior, Event as IdentifyEvent};
 
-use libp2p::request_response::{Event as RequestResponseEvent, OutboundRequestId, ResponseChannel as RequestResponseChannel};
 use libp2p::request_response::cbor::Behaviour as RequestResponseBehavior;
+use libp2p::request_response::{
+    Event as RequestResponseEvent, OutboundRequestId, ResponseChannel as RequestResponseChannel,
+};
 
-use crate::message::{GreetRequest, GreetResponse};
+use crate::message::TransactionMessage; // Using TransactionMessage instead of GreetRequest
 
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "Event")]
 pub(crate) struct Behavior {
     identify: IdentifyBehavior,
     kad: KademliaBehavior<KademliaInMemory>,
-    rr: RequestResponseBehavior<GreetRequest, GreetResponse>
+    rr: RequestResponseBehavior<TransactionMessage, TransactionMessage>, // Changed from GreetRequest/GreetResponse
 }
 
 impl Behavior {
-    pub fn new(kad: KademliaBehavior<KademliaInMemory>, identify: IdentifyBehavior, rr: RequestResponseBehavior<GreetRequest, GreetResponse>) -> Self {
-        Self { kad, identify, rr  }
+    pub fn new(
+        kad: KademliaBehavior<KademliaInMemory>,
+        identify: IdentifyBehavior,
+        rr: RequestResponseBehavior<TransactionMessage, TransactionMessage>,
+    ) -> Self {
+        Self { kad, identify, rr }
     }
 
     pub fn register_addr_kad(&mut self, peer_id: &PeerId, addr: Multiaddr) -> RoutingUpdate {
@@ -38,11 +39,21 @@ impl Behavior {
         self.rr.add_address(peer_id, addr)
     }
 
-    pub fn send_message(&mut self, peer_id: &PeerId, message: GreetRequest) -> OutboundRequestId {
+    // Send a TransactionMessage
+    pub fn send_message(
+        &mut self,
+        peer_id: &PeerId,
+        message: TransactionMessage,
+    ) -> OutboundRequestId {
         self.rr.send_request(peer_id, message)
     }
 
-    pub fn send_response(&mut self, ch: RequestResponseChannel<GreetResponse>, rs: GreetResponse) -> Result<(), GreetResponse> {
+    // Send a response with a TransactionMessage
+    pub fn send_response(
+        &mut self,
+        ch: RequestResponseChannel<TransactionMessage>,
+        rs: TransactionMessage,
+    ) -> Result<(), TransactionMessage> {
         self.rr.send_response(ch, rs)
     }
 
@@ -55,7 +66,7 @@ impl Behavior {
 pub(crate) enum Event {
     Identify(IdentifyEvent),
     Kad(KademliaEvent),
-    RequestResponse(RequestResponseEvent<GreetRequest, GreetResponse>)
+    RequestResponse(RequestResponseEvent<TransactionMessage, TransactionMessage>), // Changed from GreetRequest/GreetResponse
 }
 
 impl From<IdentifyEvent> for Event {
@@ -70,8 +81,9 @@ impl From<KademliaEvent> for Event {
     }
 }
 
-impl From<RequestResponseEvent<GreetRequest, GreetResponse>> for Event {
-    fn from(value: RequestResponseEvent<GreetRequest, GreetResponse>) -> Self {
+impl From<RequestResponseEvent<TransactionMessage, TransactionMessage>> for Event {
+    // Changed from GreetRequest/GreetResponse
+    fn from(value: RequestResponseEvent<TransactionMessage, TransactionMessage>) -> Self {
         Self::RequestResponse(value)
     }
 }
