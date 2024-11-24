@@ -171,14 +171,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = {
         let swarm_lock = swarm.lock().await;
         let local_peer_id = *swarm_lock.local_peer_id();
-        // Drop the lock before creating the state tuple
         drop(swarm_lock);
         
+        info!("Creating peer manager for node {:?}", local_peer_id);
         let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
         (
             peer_manager.clone(),
             dag.clone(),
-            swarm.clone()  // Clone the Arc<Mutex<Swarm>> instead of the guard
+            swarm.clone()
         )
     };
 
@@ -267,24 +267,28 @@ async fn handle_event(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     match event {
         SwarmEvent::Behaviour(AgentEvent::Identify(identify_event)) => {
-            if let IdentifyEvent::Received { peer_id, info: _ } = identify_event {
+            if let IdentifyEvent::Received { peer_id, info } = identify_event {
                 let mut pm = peer_manager.lock().await;
-                pm.peers.insert(*peer_id);
-                info!("Peer identified and added to PeerManager: {:?}", peer_id);
+                // Add peer with their address
+                if let Some(addr) = info.listen_addrs.first() {
+                    pm.add_peer_with_addr(*peer_id, addr.clone());
+                    info!("Peer identified and added to PeerManager with address: {:?} - {:?}", peer_id, addr);
+                }
                 info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
             }
         }
         SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
             info!("Connection established with peer: {:?}", peer_id);
             let mut pm = peer_manager.lock().await;
-            if let ConnectedPoint::Dialer { address: _, .. } = endpoint {
-                pm.peers.insert(*peer_id);
+            if let ConnectedPoint::Dialer { address, .. } = endpoint {
+                pm.add_peer_with_addr(*peer_id, address.clone());
+                info!("Added peer with address: {:?} - {:?}", peer_id, address);
             }
         }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             info!("Connection closed with peer: {:?}", peer_id);
-            let mut pm = peer_manager.lock().await;
-            pm.peers.remove(peer_id);
+            // Don't remove the peer from storage when connection closes
+            let pm = peer_manager.lock().await;
             info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
         }
         _ => {}

@@ -1,0 +1,8 @@
+{
+  "peers": [
+    "12D3KooWABZFsQzaVahN35wDd7x7AkeXcNEc9QuXhoK3gy2s5xiW"
+  ],
+  "addresses": {
+    "12D3KooWABZFsQzaVahN35wDd7x7AkeXcNEc9QuXhoK3gy2s5xiW": "/ip4/192.168.1.74/tcp/65440"
+  }
+}
