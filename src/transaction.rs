@@ -17,10 +17,6 @@ impl Transaction {
         }
         let id = format!("{:x}", hasher.finalize());
 
-        Transaction {
-            id,
-            data,
-            parents,
-        }
+        Transaction { id, data, parents }
     }
 }

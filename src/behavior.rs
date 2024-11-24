@@ -12,10 +12,10 @@ use libp2p::request_response::{
     Event as RequestResponseEvent, OutboundRequestId, ResponseChannel as RequestResponseChannel,
 };
 
-use std::collections::HashSet;
 use crate::message::TransactionMessage;
+use std::collections::HashSet;
 
-use log::{info, debug, error};
+use log::{debug, error, info};
 
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
@@ -57,16 +57,11 @@ impl<T: PeerManagement> BehaviorWithContext<T> {
         rr: RequestResponseBehavior<TransactionMessage, TransactionMessage>,
         peer_manager: SharedPeerManager<T>,
     ) -> Self {
-        let context = Arc::new(BehaviorContext {
-            peer_manager,
-        });
+        let context = Arc::new(BehaviorContext { peer_manager });
 
         let behavior = Behavior::new(kad, identify, rr);
 
-        Self {
-            behavior,
-            context,
-        }
+        Self { behavior, context }
     }
 
     // Delegate methods to access the inner behavior and context
@@ -84,14 +79,14 @@ impl<T: PeerManagement> BehaviorWithContext<T> {
             info!("PeerManager state before sending transaction: {:?}", pm);
             pm.get_peers()
         };
-        
+
         info!("Found {} peers for transaction propagation", peers.len());
-        
+
         if peers.is_empty() {
             info!("No peers available to send transaction to");
             return;
         }
-        
+
         for peer in &peers {
             info!("Attempting to send transaction to peer: {:?}", peer);
             self.behavior.rr.send_request(peer, transaction.clone());
@@ -100,32 +95,38 @@ impl<T: PeerManagement> BehaviorWithContext<T> {
 
     fn on_swarm_event(&mut self, event: Event) {
         match event {
-            Event::Kad(kad_event) => {
-                match kad_event {
-                    KademliaEvent::RoutingUpdated { peer, addresses, .. } => {
-                        for address in addresses.iter() {
-                            self.behavior.kad.add_address(&peer, address.clone());
-                            block_in_place(|| {
-                                let mut pm = self.context.peer_manager.blocking_lock();
-                                pm.add_peer_with_addr(peer, address.clone());
-                            });
-                            info!("Kad: Added address {:?} for discovered peer {:?}", address, peer);
-                        }
-                    },
-                    KademliaEvent::OutboundQueryProgressed { result, .. } => {
-                        debug!("Kademlia query result: {:?}", result);
-                    },
-                    _ => debug!("Other Kademlia event: {:?}", kad_event),
+            Event::Kad(kad_event) => match kad_event {
+                KademliaEvent::RoutingUpdated {
+                    peer, addresses, ..
+                } => {
+                    for address in addresses.iter() {
+                        self.behavior.kad.add_address(&peer, address.clone());
+                        block_in_place(|| {
+                            let mut pm = self.context.peer_manager.blocking_lock();
+                            pm.add_peer_with_addr(peer, address.clone());
+                        });
+                        info!(
+                            "Kad: Added address {:?} for discovered peer {:?}",
+                            address, peer
+                        );
+                    }
                 }
+                KademliaEvent::OutboundQueryProgressed { result, .. } => {
+                    debug!("Kademlia query result: {:?}", result);
+                }
+                _ => debug!("Other Kademlia event: {:?}", kad_event),
             },
             Event::ConnectionEstablished { peer_id, endpoint } => {
                 self.behavior._register_addr_kad(&peer_id, endpoint.clone());
                 block_in_place(|| {
                     let mut pm = self.context.peer_manager.blocking_lock();
                     pm.add_peer_with_addr(peer_id, endpoint.clone());
-                    info!("ConnectionEstablished: Added peer {:?} with address {:?}", peer_id, endpoint);
+                    info!(
+                        "ConnectionEstablished: Added peer {:?} with address {:?}",
+                        peer_id, endpoint
+                    );
                 });
-            },
+            }
             Event::Identify(identify_event) => {
                 if let IdentifyEvent::Received { peer_id, info, .. } = identify_event {
                     block_in_place(|| {
@@ -135,7 +136,7 @@ impl<T: PeerManagement> BehaviorWithContext<T> {
                         }
                     });
                 }
-            },
+            }
             Event::RequestResponse(e) => self.behavior.handle_request_response_event(e),
         }
     }
@@ -202,31 +203,26 @@ impl Behavior {
         self.kad.set_mode(Some(libp2p::kad::Mode::Server))
     }
 
-    fn handle_request_response_event(&mut self, event: RequestResponseEvent<TransactionMessage, TransactionMessage>) {
+    fn handle_request_response_event(
+        &mut self,
+        event: RequestResponseEvent<TransactionMessage, TransactionMessage>,
+    ) {
         match event {
-            RequestResponseEvent::Message { 
-                peer, 
-                message 
-            } => {
-                debug!("[handle_request_response_event] Received transaction message: {:?}", message);
+            RequestResponseEvent::Message { peer, message } => {
+                debug!(
+                    "[handle_request_response_event] Received transaction message: {:?}",
+                    message
+                );
                 info!("Received transaction from peer {}: {:?}", peer, message);
                 // TODO: Add transaction to DAG
-            },
-            RequestResponseEvent::InboundFailure { 
-                peer,
-                error,
-                .. 
-            } => {
+            }
+            RequestResponseEvent::InboundFailure { peer, error, .. } => {
                 error!("Inbound request failed from peer {}: {:?}", peer, error);
-            },
-            RequestResponseEvent::OutboundFailure { 
-                peer,
-                error,
-                .. 
-            } => {
+            }
+            RequestResponseEvent::OutboundFailure { peer, error, .. } => {
                 error!("Outbound request to peer {}: {:?}", peer, error);
             }
-            _ => {} 
+            _ => {}
         }
     }
 
@@ -239,11 +235,7 @@ impl Behavior {
         identify: IdentifyBehavior,
         rr: RequestResponseBehavior<TransactionMessage, TransactionMessage>,
     ) -> Self {
-        Self {
-            kad,
-            identify,
-            rr,
-        }
+        Self { kad, identify, rr }
     }
 
     pub fn handle_event(&mut self, event: Event) {
@@ -257,34 +249,35 @@ impl Behavior {
                 }
             }
             Event::Kad(kad_event) => {
-                if let KademliaEvent::RoutingUpdated { peer, addresses, .. } = kad_event {
+                if let KademliaEvent::RoutingUpdated {
+                    peer, addresses, ..
+                } = kad_event
+                {
                     for address in addresses.iter() {
                         info!("Kad: Added address {:?} for peer {:?}", address, peer);
                         self.kad.add_address(&peer, address.clone());
                     }
                 }
             }
-            Event::RequestResponse(event) => {
-                match event {
-                    RequestResponseEvent::Message { peer, message } => {
-                        info!("Received message from peer {:?}: {:?}", peer, message);
-                    }
-                    RequestResponseEvent::OutboundFailure { peer, error, .. } => {
-                        error!("Outbound request to peer {:?} failed: {:?}", peer, error);
-                    }
-                    RequestResponseEvent::InboundFailure { peer, error, .. } => {
-                        error!("Inbound request from peer {:?} failed: {:?}", peer, error);
-                    }
-                    _ => {}
+            Event::RequestResponse(event) => match event {
+                RequestResponseEvent::Message { peer, message } => {
+                    info!("Received message from peer {:?}: {:?}", peer, message);
                 }
-            }
+                RequestResponseEvent::OutboundFailure { peer, error, .. } => {
+                    error!("Outbound request to peer {:?} failed: {:?}", peer, error);
+                }
+                RequestResponseEvent::InboundFailure { peer, error, .. } => {
+                    error!("Inbound request from peer {:?} failed: {:?}", peer, error);
+                }
+                _ => {}
+            },
             Event::ConnectionEstablished { peer_id, endpoint } => {
-                info!("Connection established with peer: {:?} at {:?}", peer_id, endpoint);
+                info!(
+                    "Connection established with peer: {:?} at {:?}",
+                    peer_id, endpoint
+                );
                 // Keep track of the peer but don't remove them on disconnect
             }
         }
     }
 }
-
-
-

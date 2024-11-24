@@ -1,72 +1,54 @@
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
+use libp2p::swarm::Swarm;
+use log::debug;
+use log::error;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env::args;
 use std::error::Error;
-use axum::response::IntoResponse;
-use libp2p::swarm::Swarm;
-use std::time::Duration;
-use axum::extract::State;
-use log::error;
-use axum::{
-    routing::{post, get},
-    Json, Router,
-};
-use log::debug;
-use serde::{Serialize, Deserialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 
+use env_logger::{Builder, Env};
 use log::info;
-use env_logger::{Env, Builder};
 
 use libp2p::{
-    Multiaddr,
-    identity,
-    PeerId,
-    StreamProtocol,
-    SwarmBuilder,
-    tcp::Config as TcpConfig,
-    yamux::Config as YamuxConfig
+    identity, tcp::Config as TcpConfig, yamux::Config as YamuxConfig, Multiaddr, PeerId,
+    StreamProtocol, SwarmBuilder,
 };
 
 use libp2p::futures::StreamExt;
-use libp2p::swarm::SwarmEvent;
 use libp2p::noise::Config as NoiceConfig;
+use libp2p::swarm::SwarmEvent;
 
 use libp2p::identify::{
-    Config as IdentifyConfig,
-    Behaviour as IdentifyBehavior,
-    Event as IdentifyEvent,
+    Behaviour as IdentifyBehavior, Config as IdentifyConfig, Event as IdentifyEvent,
 };
 
 use libp2p::kad::{
-    Config as KadConfig,
-    Behaviour as KademliaBehavior,
-    store::MemoryStore as KadInMemory,
+    store::MemoryStore as KadInMemory, Behaviour as KademliaBehavior, Config as KadConfig,
 };
 
+use libp2p::request_response::cbor::Behaviour as RequestResponseBehavior;
 use libp2p::request_response::{
-    ProtocolSupport,
-    Config as RequestResponseConfig,
-    Event as RequestResponseEvent,
-    Message as RequestResponseMessage,
-};
-use libp2p::request_response::cbor::{
-    Behaviour as RequestResponseBehavior,
+    Config as RequestResponseConfig, Event as RequestResponseEvent,
+    Message as RequestResponseMessage, ProtocolSupport,
 };
 use narwhal::p2p::PeerManager;
 
 mod behavior;
-use behavior::{
-    Behavior,
-    Event as AgentEvent,
-    BehaviorContext,
-    PeerManagement,
-};
+use behavior::{Behavior, BehaviorContext, Event as AgentEvent, PeerManagement};
 
 mod message;
 use message::TransactionMessage;
-use narwhal::transaction::Transaction;
 use narwhal::dag::DAG;
+use narwhal::transaction::Transaction;
 
 use serde_json::json;
 
@@ -113,7 +95,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Generate a local keypair
     let local_key = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(local_key.public());
-    
+
     // Create initial state components
     let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
     let dag = Arc::new(TokioMutex::new(DAG::new()));
@@ -128,7 +110,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(addr) = args().nth(1) {
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
         let remote: Multiaddr = addr.parse()?;
-        
+
         // Add retry logic for initial connection
         let mut retry_count = 0;
         while retry_count < 3 {
@@ -192,7 +174,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Get HTTP port from args or use default
     let http_port = match args().nth(2) {
         Some(port) => port,
-        None => "3000".to_string()
+        None => "3000".to_string(),
     };
 
     // Spawn the HTTP server
@@ -200,8 +182,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let addr = format!("0.0.0.0:{}", http_port);
         info!("Starting HTTP server on {}", addr);
         axum::serve(
-            tokio::net::TcpListener::bind(&addr).await.expect("Failed to bind"),
-            app.into_make_service()
+            tokio::net::TcpListener::bind(&addr)
+                .await
+                .expect("Failed to bind"),
+            app.into_make_service(),
         )
         .await
         .unwrap();
@@ -217,39 +201,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 // Function to build and configure the swarm
-async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -> Result<Swarm<Behavior>, Box<dyn std::error::Error>> {
+async fn build_swarm(
+    local_key: identity::Keypair,
+    _dag: Arc<TokioMutex<DAG>>,
+) -> Result<Swarm<Behavior>, Box<dyn std::error::Error>> {
     let behavior = SwarmBuilder::with_existing_identity(local_key.clone())
         .with_tokio()
-        .with_tcp(
-            TcpConfig::default(), 
-            NoiceConfig::new, 
-            YamuxConfig::default
-        )?
+        .with_tcp(TcpConfig::default(), NoiceConfig::new, YamuxConfig::default)?
         .with_behaviour(|key| {
             let local_peer_id = PeerId::from(key.public());
             info!("LocalPeerID: {local_peer_id}");
 
             let kad_memory = KadInMemory::new(local_peer_id);
-            let kad = KademliaBehavior::with_config(
-                local_peer_id, 
-                kad_memory, 
-                KadConfig::default()
-            );
+            let kad =
+                KademliaBehavior::with_config(local_peer_id, kad_memory, KadConfig::default());
 
             let identify = IdentifyBehavior::new(
-                IdentifyConfig::new(
-                    "/agent/connection/1.0.0".to_string(),
-                    key.public(),
-                )
-                .with_push_listen_addr_updates(true)
-                .with_interval(Duration::from_secs(30))
+                IdentifyConfig::new("/agent/connection/1.0.0".to_string(), key.public())
+                    .with_push_listen_addr_updates(true)
+                    .with_interval(Duration::from_secs(30)),
             );
 
             let rr_protocol = StreamProtocol::new("/agent/message/1.0.0");
-            let rr_behavior = RequestResponseBehavior::<TransactionMessage, TransactionMessage>::new(
-                [(rr_protocol, ProtocolSupport::Full)],
-                RequestResponseConfig::default()
-            );
+            let rr_behavior =
+                RequestResponseBehavior::<TransactionMessage, TransactionMessage>::new(
+                    [(rr_protocol, ProtocolSupport::Full)],
+                    RequestResponseConfig::default(),
+                );
 
             // Create behavior directly
             Behavior::new(kad, identify, rr_behavior)
@@ -267,58 +245,63 @@ async fn handle_event(
     state: &AppState,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     debug!("[handle_event] Processing event: {:?}", event);
-    
+
     match event {
-        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+        SwarmEvent::ConnectionEstablished {
+            peer_id, endpoint, ..
+        } => {
             debug!("[handle_event] Connection established with {:?}", peer_id);
             let mut pm = state.peer_manager.lock().await;
-            debug!("[handle_event] Current peers before add: {:?}", pm.get_peers());
-            
+            debug!(
+                "[handle_event] Current peers before add: {:?}",
+                pm.get_peers()
+            );
+
             if let ConnectedPoint::Dialer { address, .. } = endpoint {
                 pm.add_peer_with_addr(*peer_id, address.clone());
                 debug!("[handle_event] Added peer with address");
             }
-            
-            debug!("[handle_event] Current peers after add: {:?}", pm.get_peers());
+
+            debug!(
+                "[handle_event] Current peers after add: {:?}",
+                pm.get_peers()
+            );
         }
         SwarmEvent::Behaviour(AgentEvent::RequestResponse(event)) => {
             match event {
-                RequestResponseEvent::Message { 
-                    peer, 
-                    message 
-                } => {
+                RequestResponseEvent::Message { peer, message } => {
                     info!("Received transaction from peer {}: {:?}", peer, message);
-                    
+
                     let msg = match message {
-                        RequestResponseMessage::Request { 
-                            request_id: _,  // Ignore unused
+                        RequestResponseMessage::Request {
+                            request_id: _, // Ignore unused
                             request,
                             channel,
                         } => {
                             // Move the channel out of the reference
                             let ch = unsafe { std::ptr::read(channel) };
                             // Send response to acknowledge receipt
-                            if let Err(e) = swarm.behaviour_mut()._send_response(ch, request.clone()) {
+                            if let Err(e) =
+                                swarm.behaviour_mut()._send_response(ch, request.clone())
+                            {
                                 error!("Failed to send response to peer {}: {:?}", peer, e);
                             }
                             request
-                        },
-                        RequestResponseMessage::Response { 
-                            request_id: _,  // Ignore unused
+                        }
+                        RequestResponseMessage::Response {
+                            request_id: _, // Ignore unused
                             response,
                         } => response,
                     };
-                    
+
                     // Create transaction from message
-                    let transaction = Transaction::new(
-                        msg.transaction_data.clone(),
-                        msg.parents.clone()
-                    );
+                    let transaction =
+                        Transaction::new(msg.transaction_data.clone(), msg.parents.clone());
 
                     // Add to DAG
                     let mut dag = state.dag.lock().await;
                     dag.add_transaction(transaction);
-                    
+
                     debug!("Added transaction to DAG from peer {}", peer);
                 }
                 RequestResponseEvent::InboundFailure { peer, error, .. } => {
@@ -336,16 +319,25 @@ async fn handle_event(
                 // Add peer with their address
                 if let Some(addr) = info.listen_addrs.first() {
                     pm.add_peer_with_addr(*peer_id, addr.clone());
-                    info!("Peer identified and added to PeerManager with address: {:?} - {:?}", peer_id, addr);
+                    info!(
+                        "Peer identified and added to PeerManager with address: {:?} - {:?}",
+                        peer_id, addr
+                    );
                 }
-                info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
+                info!(
+                    "Current peer list: {:?}",
+                    pm.peers.iter().collect::<Vec<_>>()
+                );
             }
         }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             info!("Connection closed with peer: {:?}", peer_id);
             // Don't remove the peer from storage when connection closes
             let pm = state.peer_manager.lock().await;
-            info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
+            info!(
+                "Current peer list: {:?}",
+                pm.peers.iter().collect::<Vec<_>>()
+            );
         }
         _ => {}
     }
@@ -359,10 +351,13 @@ async fn receive_transaction(
     Json(request): Json<TransactionRequestData>,
 ) -> impl IntoResponse {
     debug!("[receive_transaction] Received request: {:?}", request);
-    
+
     let peers = {
         let pm = state.peer_manager.lock().await;
-        debug!("[receive_transaction] PeerManager state before get_peers: {:?}", &*pm);
+        debug!(
+            "[receive_transaction] PeerManager state before get_peers: {:?}",
+            &*pm
+        );
         pm.get_peers()
     };
 
@@ -384,12 +379,21 @@ async fn receive_transaction(
     let mut swarm = state.swarm.lock().await;
     let peer_count = peers.len();
     for peer in &peers {
-        debug!("[receive_transaction] Sending transaction to peer: {:?}", peer);
+        debug!(
+            "[receive_transaction] Sending transaction to peer: {:?}",
+            peer
+        );
         let request_id = swarm.behaviour_mut().send_message(peer, message.clone());
-        debug!("[receive_transaction] Sent transaction to peer {} with request_id {:?}", peer, request_id);
+        debug!(
+            "[receive_transaction] Sent transaction to peer {} with request_id {:?}",
+            peer, request_id
+        );
     }
 
-    info!("Transaction added to DAG and propagated to {} peers", peer_count);
+    info!(
+        "Transaction added to DAG and propagated to {} peers",
+        peer_count
+    );
 
     Json(json!({
         "status": "success",
@@ -399,12 +403,10 @@ async fn receive_transaction(
 }
 
 // Update the handler signature to use AppState
-async fn get_dag_state(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn get_dag_state(State(state): State<AppState>) -> impl IntoResponse {
     let dag = state.dag.lock().await;
     let transactions = dag.get_all_transactions();
-    
+
     Json(json!({
         "transaction_count": transactions.len(),
         "transactions": transactions.iter().map(|tx| {
@@ -428,7 +430,3 @@ impl PeerManagement for PeerManager {
         // Add address handling if needed
     }
 }
-
-
-
-

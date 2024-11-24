@@ -6,7 +6,8 @@
 
 ### Quick start
 
-```
+```shell
+
 # Clone the repository
 git clone https://github.com/yourusername/narwhal.git
 cd narwhal
@@ -17,50 +18,51 @@ cargo build
 
 #### Running nodes
 
-```
-First node:cargo run -- "" 3001
-```
+```shell
 
+# First node:
+cargo run -- "" 3001
 
-##### Look for log that says something like:
-New listen address address=/ip4/192.168.1.74/tcp/60691
+# Look for log that says something like: New listen address address=/ip4/192.168.1.74/tcp/60691
 
-
-
-
-### Second node, using the exact P2P address from first node's logs
+# Second node: Get the exact multiaddress from the first node's logs and use it here
 cargo run -- /ip4/192.168.1.74/tcp/60493 3002
+```
+
+
 
 The following will take place:
-P2P Connection process should complete successfully:
-Noise protocol negotiation should succeed
-Yamux transport should be established
-Peer ID exchange should be completed
-Round-trip time should be  measured (~900 microsecs)
+- P2P Connection process should complete successfully:
+- Noise protocol negotiation should succeed
+- Yamux transport should be established
+- Peer ID exchange should be completed
+- Round-trip time should be  measured (~900 microsecs)
 
 ### Send transactions
+```shell
 
-To first node:
+# To first node:
 curl -X POST http://localhost:3001/transaction \
   -H "Content-Type: application/json" \
   -d '{"data": "test transaction 1", "parents": []}'
 
-To second node:
+# To second node:
 curl -X POST http://localhost:3002/transaction \
   -H "Content-Type: application/json" \
   -d '{"data": "test transaction 2", "parents": []}'
-
+```
 ### Query DAG state:
+```shell
 
 Node 1: curl http://localhost:3001/dag/state 
 Node 2: curl http://localhost:3002/dag/state 
-
+```
 ### Features
-DAG-based transaction dissemination
-Peer-to-peer networking using libp2p
-HTTP API for transaction submission and state queries
-Transaction parent-child relationship validation
-Concurrent transaction processing
+- DAG-based transaction dissemination
+- Peer-to-peer networking using libp2p
+- HTTP API for transaction submission and state queries
+- Transaction parent-child relationship validation
+- Concurrent transaction processing
 
 ### Contributing
 We welcome contributions to the Narwhal implementation! Here's how you can contribute:

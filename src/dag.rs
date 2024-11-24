@@ -1,6 +1,6 @@
 use crate::transaction::Transaction;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use sha2::{Sha256, Digest};
 
 pub struct DAG {
     pub transactions: HashMap<String, Transaction>,
@@ -43,9 +43,9 @@ impl DAG {
 
 impl Default for DAG {
     fn default() -> Self {
-    Self::new()
+        Self::new()
     }
-    }
+}
 
 impl Transaction {
     pub fn data(&self) -> &str {

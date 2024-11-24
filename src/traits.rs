@@ -1,4 +1,4 @@
-use libp2p::{PeerId, Multiaddr};
+use libp2p::{Multiaddr, PeerId};
 
 pub trait PeerManagement {
     fn get_peers(&self) -> Vec<PeerId>;
