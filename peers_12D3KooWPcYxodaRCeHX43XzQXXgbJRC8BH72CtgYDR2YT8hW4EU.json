@@ -1,0 +1,8 @@
+{
+  "peers": [
+    "12D3KooWMsTtgPzoxCsoTvtSLJSCA1fpS1bSYBgpwSnWu1Ry2YSR"
+  ],
+  "addresses": {
+    "12D3KooWMsTtgPzoxCsoTvtSLJSCA1fpS1bSYBgpwSnWu1Ry2YSR": "/ip4/127.0.0.1/tcp/54443"
+  }
+}

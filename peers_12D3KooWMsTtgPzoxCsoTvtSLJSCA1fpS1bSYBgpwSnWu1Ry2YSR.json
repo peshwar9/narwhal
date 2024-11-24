@@ -1,0 +1,8 @@
+{
+  "peers": [
+    "12D3KooWPcYxodaRCeHX43XzQXXgbJRC8BH72CtgYDR2YT8hW4EU"
+  ],
+  "addresses": {
+    "12D3KooWPcYxodaRCeHX43XzQXXgbJRC8BH72CtgYDR2YT8hW4EU": "/ip4/192.168.1.74/tcp/54444"
+  }
+}

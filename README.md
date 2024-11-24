@@ -27,3 +27,8 @@ To second node:
 curl -X POST http://localhost:3002/transaction \
   -H "Content-Type: application/json" \
   -d '{"data": "test transaction", "parents": []}'
+
+Query DAG state:
+
+Node 1: curl http://localhost:3001/dag/state 
+Node 2: curl http://localhost:3002/dag/state 
