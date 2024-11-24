@@ -45,11 +45,15 @@ use libp2p::kad::{
 };
 
 use libp2p::request_response::{
+    ProtocolSupport,
     Config as RequestResponseConfig,
-    ProtocolSupport as RequestResponseProtocolSupport,
+    Event as RequestResponseEvent,
+    Message as RequestResponseMessage,
+};
+use libp2p::request_response::cbor::{
+    Behaviour as RequestResponseBehavior,
 };
 use narwhal::p2p::PeerManager;
-use libp2p::request_response::cbor::Behaviour as RequestResponseBehavior;
 
 mod behavior;
 use behavior::{
@@ -243,7 +247,7 @@ async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -
 
             let rr_protocol = StreamProtocol::new("/agent/message/1.0.0");
             let rr_behavior = RequestResponseBehavior::<TransactionMessage, TransactionMessage>::new(
-                [(rr_protocol, RequestResponseProtocolSupport::Full)],
+                [(rr_protocol, ProtocolSupport::Full)],
                 RequestResponseConfig::default()
             );
 
@@ -276,6 +280,55 @@ async fn handle_event(
             }
             
             debug!("[handle_event] Current peers after add: {:?}", pm.get_peers());
+        }
+        SwarmEvent::Behaviour(AgentEvent::RequestResponse(event)) => {
+            match event {
+                RequestResponseEvent::Message { 
+                    peer, 
+                    message 
+                } => {
+                    info!("Received transaction from peer {}: {:?}", peer, message);
+                    
+                    let msg = match message {
+                        RequestResponseMessage::Request { 
+                            request_id: _,  // Ignore unused
+                            request,
+                            channel,
+                        } => {
+                            // Move the channel out of the reference
+                            let ch = unsafe { std::ptr::read(channel) };
+                            // Send response to acknowledge receipt
+                            if let Err(e) = swarm.behaviour_mut()._send_response(ch, request.clone()) {
+                                error!("Failed to send response to peer {}: {:?}", peer, e);
+                            }
+                            request
+                        },
+                        RequestResponseMessage::Response { 
+                            request_id: _,  // Ignore unused
+                            response,
+                        } => response,
+                    };
+                    
+                    // Create transaction from message
+                    let transaction = Transaction::new(
+                        msg.transaction_data.clone(),
+                        msg.parents.clone()
+                    );
+
+                    // Add to DAG
+                    let mut dag = state.dag.lock().await;
+                    dag.add_transaction(transaction);
+                    
+                    debug!("Added transaction to DAG from peer {}", peer);
+                }
+                RequestResponseEvent::InboundFailure { peer, error, .. } => {
+                    error!("Inbound request failed from peer {}: {:?}", peer, error);
+                }
+                RequestResponseEvent::OutboundFailure { peer, error, .. } => {
+                    error!("Outbound request failed to peer {}: {:?}", peer, error);
+                }
+                _ => {}
+            }
         }
         SwarmEvent::Behaviour(AgentEvent::Identify(identify_event)) => {
             if let IdentifyEvent::Received { peer_id, info } = identify_event {
