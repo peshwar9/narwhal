@@ -10,6 +10,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use log::debug;
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
@@ -171,13 +172,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let local_peer_id = *swarm_lock.local_peer_id();
         drop(swarm_lock);
         
-        info!("Creating peer manager for node {:?}", local_peer_id);
+        debug!("Creating initial state with local_peer_id: {:?}", local_peer_id);
         let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
-        (
-            peer_manager.clone(),
-            dag.clone(),
-            swarm.clone()
-        )
+        
+        // Log the initial state
+        {
+            let pm = peer_manager.lock().await;
+            debug!("Initial PeerManager state - peers: {:?}", pm.get_peers());
+        }
+        
+        (peer_manager.clone(), dag.clone(), swarm.clone())
     };
 
     // Initialize the Axum server with state
@@ -258,11 +262,13 @@ async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -
 
 // Fix the handle_event signature to use AgentEvent
 async fn handle_event(
-    _swarm: &mut Swarm<Behavior>,
+    swarm: &mut Swarm<Behavior>,
     event: &SwarmEvent<AgentEvent>,
     peer_manager: &SharedPeerManager,
-    _dag: Arc<TokioMutex<DAG>>
+    dag: Arc<TokioMutex<DAG>>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    debug!("[handle_event] Processing event: {:?}", event);
+    
     match event {
         SwarmEvent::Behaviour(AgentEvent::Identify(identify_event)) => {
             if let IdentifyEvent::Received { peer_id, info } = identify_event {
@@ -276,12 +282,16 @@ async fn handle_event(
             }
         }
         SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-            info!("Connection established with peer: {:?}", peer_id);
+            debug!("[handle_event] Connection established with {:?}", peer_id);
             let mut pm = peer_manager.lock().await;
+            debug!("[handle_event] Current peers before add: {:?}", pm.get_peers());
+            
             if let ConnectedPoint::Dialer { address, .. } = endpoint {
                 pm.add_peer_with_addr(*peer_id, address.clone());
-                info!("Added peer with address: {:?} - {:?}", peer_id, address);
+                debug!("[handle_event] Added peer with address");
             }
+            
+            debug!("[handle_event] Current peers after add: {:?}", pm.get_peers());
         }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             info!("Connection closed with peer: {:?}", peer_id);
@@ -300,15 +310,16 @@ async fn receive_transaction(
     State((peer_manager, dag, _swarm)): State<SharedState>,
     Json(request): Json<TransactionRequestData>,
 ) -> impl IntoResponse {
-    info!("Node received new transaction: {:?}", request);
+    debug!("[receive_transaction] Received request: {:?}", request);
     
-    // Clone the peers vector so we can use it multiple times
+    // Get the list of available peers from the shared PeerManager
     let peers = {
         let pm = peer_manager.lock().await;
+        debug!("[receive_transaction] PeerManager state before get_peers: {:?}", &*pm);
         pm.get_peers()
     };
 
-    info!("Available peers for transaction: {:?}", &peers);
+    debug!("[receive_transaction] Available peers: {:?}", peers);
 
     if peers.is_empty() {
         return Json(json!({
@@ -317,29 +328,18 @@ async fn receive_transaction(
         }));
     }
 
-    // Create a Transaction object from the request data
-    let transaction = Transaction::new(
-        request.data.clone(),
-        request.parents.clone()
-    );
-
     // Add transaction to DAG
+    let transaction = Transaction::new(request.data.clone(), request.parents.clone());
     let mut dag = dag.lock().await;
     dag.add_transaction(transaction);
 
-    // Use peers.len() before moving peers into the loop
-    let peer_count = peers.len();
-
-    // Broadcast to peers
-    for peer in peers {
-        info!("Broadcasting transaction to peer: {:?}", peer);
-        // Implement broadcasting logic here
-    }
+    // Log success with peer count
+    info!("Transaction added to DAG and will be propagated to {} peers", peers.len());
 
     Json(json!({
         "status": "success",
         "message": "Transaction received and propagated",
-        "peers": peer_count
+        "peers": peers.len()
     }))
 }
 

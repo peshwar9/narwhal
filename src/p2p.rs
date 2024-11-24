@@ -4,7 +4,7 @@ use libp2p::{PeerId, Multiaddr};
 use std::fs;
 use serde::{Serialize, Deserialize};
 use std::path::Path;
-use log::{info, error};
+use log::{info, error, debug};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
@@ -93,35 +93,57 @@ pub struct PeerManager {
 
 impl PeerManager {
     pub fn new(local_peer_id: PeerId) -> Self {
-        info!("Creating new PeerManager for {:?}", local_peer_id);
+        info!("[PeerManager::new] Creating new instance for {:?}", local_peer_id);
         let storage = PeerStorage::new(&local_peer_id);
         
         let peers = storage.peers.iter()
-            .filter_map(|p| p.parse::<PeerId>().ok())
-            .collect();
-
-        let peer_addresses = storage.addresses.iter()
-            .filter_map(|(p, a)| {
-                Some((
-                    p.parse::<PeerId>().ok()?,
-                    a.parse::<Multiaddr>().ok()?
-                ))
+            .filter_map(|p| {
+                match p.parse::<PeerId>() {
+                    Ok(peer_id) => {
+                        info!("[PeerManager::new] Loaded peer: {:?}", peer_id);
+                        Some(peer_id)
+                    }
+                    Err(e) => {
+                        error!("[PeerManager::new] Failed to parse peer ID {}: {}", p, e);
+                        None
+                    }
+                }
             })
             .collect();
 
-        PeerManager {
+        let manager = PeerManager {
             peers,
-            peer_addresses,
+            peer_addresses: storage.addresses.iter()
+                .filter_map(|(p, a)| {
+                    let peer_id = p.parse::<PeerId>().ok()?;
+                    let addr = a.parse::<Multiaddr>().ok()?;
+                    info!("[PeerManager::new] Loaded peer address: {:?} -> {:?}", peer_id, addr);
+                    Some((peer_id, addr))
+                })
+                .collect(),
             local_peer_id,
-        }
+        };
+
+        info!("[PeerManager::new] Created with {} peers", manager.peers.len());
+        manager
+    }
+
+    pub fn get_peers(&self) -> Vec<PeerId> {
+        let peers = self.peers.iter().cloned().collect::<Vec<_>>();
+        info!("[PeerManager::get_peers] Returning {} peers: {:?}", peers.len(), peers);
+        peers
     }
 
     pub fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
-        info!("Adding peer {:?} with address {:?}", peer_id, addr);
+        debug!("[PeerManager::add_peer_with_addr] Adding peer {:?} with addr {:?}", peer_id, addr);
+        if peer_id == self.local_peer_id {
+            debug!("[PeerManager::add_peer_with_addr] Skipping self peer");
+            return;
+        }
         self.peers.insert(peer_id.clone());
         self.peer_addresses.insert(peer_id, addr);
+        debug!("[PeerManager::add_peer_with_addr] Current peers: {:?}", self.peers);
         self.save_to_disk();
-        info!("Current peers after adding: {:?}", self.peers);
     }
 
     fn save_to_disk(&self) {
@@ -139,10 +161,6 @@ impl PeerManager {
         } else {
             info!("Successfully saved peers to disk for {:?}", self.local_peer_id);
         }
-    }
-
-    pub fn get_peers(&self) -> Vec<PeerId> {
-        self.peers.iter().cloned().collect()
     }
 
     pub fn get_peer_address(&self, peer_id: &PeerId) -> Option<&Multiaddr> {
