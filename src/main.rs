@@ -94,6 +94,13 @@ impl<T: PeerManagement> Node<T> {
     }
 }
 
+#[derive(Clone)]
+pub struct AppState {
+    peer_manager: Arc<TokioMutex<PeerManager>>,
+    dag: Arc<TokioMutex<DAG>>,
+    swarm: Arc<TokioMutex<Swarm<Behavior>>>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize logger
@@ -101,8 +108,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Generate a local keypair
     let local_key = identity::Keypair::generate_ed25519();
+    let local_peer_id = PeerId::from(local_key.public());
     
-    // Create a DAG for the current node
+    // Create initial state components
+    let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
     let dag = Arc::new(TokioMutex::new(DAG::new()));
 
     // Build the Swarm
@@ -136,16 +145,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         swarm.listen_on("/ip4/0.0.0.0/tcp/8000".parse()?)?;
     }
 
-    // Instead of calling handle_swarm_events directly, spawn it as a task
+    // Wrap swarm in Arc<Mutex>
     let swarm = Arc::new(TokioMutex::new(swarm));
+
+    // Create AppState for both tasks
+    let state = AppState {
+        peer_manager: peer_manager.clone(),
+        dag: dag.clone(),
+        swarm: swarm.clone(),
+    };
+
+    // Spawn the swarm task
     let swarm_task = {
-        let dag = dag.clone();
         let swarm_clone = swarm.clone();
-        let local_peer_id = {
-            let swarm = swarm_clone.lock().await;
-            *swarm.local_peer_id()
-        };
-        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
+        let state = state.clone();
 
         tokio::spawn(async move {
             loop {
@@ -157,7 +170,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Create a new block to handle events
                 {
                     let mut swarm = swarm_clone.lock().await;
-                    if let Err(e) = handle_event(&mut swarm, &event, &peer_manager, dag.clone()).await {
+                    if let Err(e) = handle_event(&mut swarm, &event, &state).await {
                         error!("Error handling swarm event: {}", e);
                         break;
                     }
@@ -166,36 +179,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })
     };
 
-    // Create shared state
-    let state = {
-        let swarm_lock = swarm.lock().await;
-        let local_peer_id = *swarm_lock.local_peer_id();
-        drop(swarm_lock);
-        
-        debug!("Creating initial state with local_peer_id: {:?}", local_peer_id);
-        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
-        
-        // Log the initial state
-        {
-            let pm = peer_manager.lock().await;
-            debug!("Initial PeerManager state - peers: {:?}", pm.get_peers());
-        }
-        
-        (peer_manager.clone(), dag.clone(), swarm.clone())
-    };
-
     // Initialize the Axum server with state
     let app = Router::new()
         .route("/transaction", post(receive_transaction))
         .with_state(state);
 
-    // In main function, modify the argument handling
+    // Get HTTP port from args or use default
     let http_port = match args().nth(2) {
         Some(port) => port,
-        None => "3000".to_string()  // Default port if not specified
+        None => "3000".to_string()
     };
 
-    // Spawn the HTTP server with the specified port
+    // Spawn the HTTP server
     let server = tokio::spawn(async move {
         let addr = format!("0.0.0.0:{}", http_port);
         info!("Starting HTTP server on {}", addr);
@@ -260,30 +255,18 @@ async fn build_swarm(local_key: identity::Keypair, _dag: Arc<TokioMutex<DAG>>) -
     Ok(behavior)
 }
 
-// Fix the handle_event signature to use AgentEvent
+// Update the handle_event signature
 async fn handle_event(
     swarm: &mut Swarm<Behavior>,
     event: &SwarmEvent<AgentEvent>,
-    peer_manager: &SharedPeerManager,
-    dag: Arc<TokioMutex<DAG>>
+    state: &AppState,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     debug!("[handle_event] Processing event: {:?}", event);
     
     match event {
-        SwarmEvent::Behaviour(AgentEvent::Identify(identify_event)) => {
-            if let IdentifyEvent::Received { peer_id, info } = identify_event {
-                let mut pm = peer_manager.lock().await;
-                // Add peer with their address
-                if let Some(addr) = info.listen_addrs.first() {
-                    pm.add_peer_with_addr(*peer_id, addr.clone());
-                    info!("Peer identified and added to PeerManager with address: {:?} - {:?}", peer_id, addr);
-                }
-                info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
-            }
-        }
         SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
             debug!("[handle_event] Connection established with {:?}", peer_id);
-            let mut pm = peer_manager.lock().await;
+            let mut pm = state.peer_manager.lock().await;
             debug!("[handle_event] Current peers before add: {:?}", pm.get_peers());
             
             if let ConnectedPoint::Dialer { address, .. } = endpoint {
@@ -293,10 +276,21 @@ async fn handle_event(
             
             debug!("[handle_event] Current peers after add: {:?}", pm.get_peers());
         }
+        SwarmEvent::Behaviour(AgentEvent::Identify(identify_event)) => {
+            if let IdentifyEvent::Received { peer_id, info } = identify_event {
+                let mut pm = state.peer_manager.lock().await;
+                // Add peer with their address
+                if let Some(addr) = info.listen_addrs.first() {
+                    pm.add_peer_with_addr(*peer_id, addr.clone());
+                    info!("Peer identified and added to PeerManager with address: {:?} - {:?}", peer_id, addr);
+                }
+                info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
+            }
+        }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             info!("Connection closed with peer: {:?}", peer_id);
             // Don't remove the peer from storage when connection closes
-            let pm = peer_manager.lock().await;
+            let pm = state.peer_manager.lock().await;
             info!("Current peer list: {:?}", pm.peers.iter().collect::<Vec<_>>());
         }
         _ => {}
@@ -307,14 +301,13 @@ async fn handle_event(
 // Fix the receive_transaction handler to use .await for TokioMutex
 #[debug_handler]
 async fn receive_transaction(
-    State((peer_manager, dag, _swarm)): State<SharedState>,
+    State(state): State<AppState>,
     Json(request): Json<TransactionRequestData>,
 ) -> impl IntoResponse {
     debug!("[receive_transaction] Received request: {:?}", request);
     
-    // Get the list of available peers from the shared PeerManager
     let peers = {
-        let pm = peer_manager.lock().await;
+        let pm = state.peer_manager.lock().await;
         debug!("[receive_transaction] PeerManager state before get_peers: {:?}", &*pm);
         pm.get_peers()
     };
@@ -330,7 +323,7 @@ async fn receive_transaction(
 
     // Add transaction to DAG
     let transaction = Transaction::new(request.data.clone(), request.parents.clone());
-    let mut dag = dag.lock().await;
+    let mut dag = state.dag.lock().await;
     dag.add_transaction(transaction);
 
     // Log success with peer count
