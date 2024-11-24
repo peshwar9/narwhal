@@ -238,6 +238,45 @@ impl Behavior {
             rr,
         }
     }
+
+    pub fn handle_event(&mut self, event: Event) {
+        match event {
+            Event::Identify(identify_event) => {
+                if let IdentifyEvent::Received { peer_id, info, .. } = identify_event {
+                    info!("Identified peer: {:?}", peer_id);
+                    for addr in info.listen_addrs {
+                        self.kad.add_address(&peer_id, addr);
+                    }
+                }
+            }
+            Event::Kad(kad_event) => {
+                if let KademliaEvent::RoutingUpdated { peer, addresses, .. } = kad_event {
+                    for address in addresses.iter() {
+                        info!("Kad: Added address {:?} for peer {:?}", address, peer);
+                        self.kad.add_address(&peer, address.clone());
+                    }
+                }
+            }
+            Event::RequestResponse(event) => {
+                match event {
+                    RequestResponseEvent::Message { peer, message } => {
+                        info!("Received message from peer {:?}: {:?}", peer, message);
+                    }
+                    RequestResponseEvent::OutboundFailure { peer, error, .. } => {
+                        error!("Outbound request to peer {:?} failed: {:?}", peer, error);
+                    }
+                    RequestResponseEvent::InboundFailure { peer, error, .. } => {
+                        error!("Inbound request from peer {:?} failed: {:?}", peer, error);
+                    }
+                    _ => {}
+                }
+            }
+            Event::ConnectionEstablished { peer_id, endpoint } => {
+                info!("Connection established with peer: {:?} at {:?}", peer_id, endpoint);
+                // Keep track of the peer but don't remove them on disconnect
+            }
+        }
+    }
 }
 
 
