@@ -121,6 +121,7 @@ impl PeerManager {
         self.peers.insert(peer_id.clone());
         self.peer_addresses.insert(peer_id, addr);
         self.save_to_disk();
+        info!("Current peers after adding: {:?}", self.peers);
     }
 
     fn save_to_disk(&self) {
@@ -140,23 +141,21 @@ impl PeerManager {
         }
     }
 
-    pub fn get_peers(&self) -> HashSet<PeerId> {
-        let peers = self.peers.clone();
-        info!("Retrieved {} peers from storage: {:?}", peers.len(), peers);
-        peers
+    pub fn get_peers(&self) -> Vec<PeerId> {
+        self.peers.iter().cloned().collect()
     }
 
-    pub fn get_peer_addr(&self, peer_id: &PeerId) -> Option<&Multiaddr> {
+    pub fn get_peer_address(&self, peer_id: &PeerId) -> Option<&Multiaddr> {
         self.peer_addresses.get(peer_id)
     }
 }
 
 impl PeerManagement for PeerManager {
-    fn get_peers(&self) -> Vec<PeerId> {
-        self.get_peers().into_iter().collect()
+    fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        PeerManager::add_peer_with_addr(self, peer_id, addr)
     }
 
-    fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
-        self.add_peer_with_addr(peer_id, addr);
+    fn get_peers(&self) -> Vec<PeerId> {
+        PeerManager::get_peers(self)
     }
 }

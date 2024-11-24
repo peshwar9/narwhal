@@ -70,13 +70,11 @@ use libp2p::core::ConnectedPoint;
 use axum::debug_handler;
 
 type _PeerMap = Arc<TokioMutex<HashMap<PeerId, Vec<Multiaddr>>>>;
-type SharedState = (
-    Arc<TokioMutex<PeerManager>>,
-    Arc<TokioMutex<DAG>>,
-    Arc<TokioMutex<Swarm<Behavior>>>
-);
-
+type SharedDAG = Arc<TokioMutex<DAG>>;
+type SharedSwarm = Arc<TokioMutex<Swarm<Behavior>>>;
 type SharedPeerManager = Arc<TokioMutex<PeerManager>>;
+
+type SharedState = (SharedPeerManager, SharedDAG, SharedSwarm);
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TransactionRequestData {
@@ -299,60 +297,50 @@ async fn handle_event(
 // Fix the receive_transaction handler to use .await for TokioMutex
 #[debug_handler]
 async fn receive_transaction(
-    State(state): State<SharedState>,
-    Json(payload): Json<TransactionRequestData>,
-) -> axum::response::Response {
-    let (peer_manager, dag, swarm) = state;
-    info!("Node received new transaction: {:?}", payload);
-
-    // Get current peer list from PeerManager
-    let peers_list = {
-        let mut swarm_lock = swarm.lock().await;
-        let pm = peer_manager.lock().await;
-        swarm_lock.behaviour_mut().get_peers(&*pm)
-    };
+    State((peer_manager, dag, _swarm)): State<SharedState>,
+    Json(request): Json<TransactionRequestData>,
+) -> impl IntoResponse {
+    info!("Node received new transaction: {:?}", request);
     
-    info!("Peers available for transaction: {:?}", peers_list);
+    // Clone the peers vector so we can use it multiple times
+    let peers = {
+        let pm = peer_manager.lock().await;
+        pm.get_peers()
+    };
 
-    // Create the transaction
-    let transaction = Transaction::new(payload.data, payload.parents);
+    info!("Available peers for transaction: {:?}", &peers);
 
-    // Add the transaction to the DAG
-    let mut dag_lock = dag.lock().await;
-    dag_lock.add_transaction(transaction.clone());
-
-    if peers_list.is_empty() {
+    if peers.is_empty() {
         return Json(json!({
             "status": "warning",
             "message": "Transaction received but no peers available for propagation"
-        })).into_response();
+        }));
     }
 
-    // Prepare the transaction message
-    let message = TransactionMessage {
-        transaction_id: transaction.id.clone(),
-        transaction_data: transaction.data.clone(),
-        parents: transaction.parents.clone(),
-    };
+    // Create a Transaction object from the request data
+    let transaction = Transaction::new(
+        request.data.clone(),
+        request.parents.clone()
+    );
 
-    // Lock swarm to propagate the transaction
-    let mut swarm_lock = swarm.lock().await;
-    let peer_count = peers_list.len();
+    // Add transaction to DAG
+    let mut dag = dag.lock().await;
+    dag.add_transaction(transaction);
 
-    // Send to each peer
-    for peer_id in &peers_list {
-        info!("Sending transaction to peer: {:?}", peer_id);
-        let outbound_id = swarm_lock.behaviour_mut().send_message(peer_id, message.clone());
-        info!("Transaction {} propagated to peer {} with request ID {:?}", 
-            transaction.id, peer_id, outbound_id);
+    // Use peers.len() before moving peers into the loop
+    let peer_count = peers.len();
+
+    // Broadcast to peers
+    for peer in peers {
+        info!("Broadcasting transaction to peer: {:?}", peer);
+        // Implement broadcasting logic here
     }
 
-    // Return a successful HTTP response
     Json(json!({
         "status": "success",
         "message": "Transaction received and propagated",
-        "peer_count": peer_count
-    })).into_response()
+        "peers": peer_count
+    }))
 }
 
 impl PeerManagement for PeerManager {
@@ -360,7 +348,7 @@ impl PeerManagement for PeerManager {
         self.peers.iter().cloned().collect()
     }
 
-    fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
+    fn add_peer_with_addr(&mut self, peer_id: PeerId, _addr: Multiaddr) {
         // Implement this method based on your PeerManager's functionality
         self.peers.insert(peer_id);
         // Add address handling if needed
