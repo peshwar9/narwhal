@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::extract::State;
 use log::error;
 use axum::{
-    routing::post,
+    routing::{post, get},
     Json, Router,
 };
 use log::debug;
@@ -182,6 +182,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the Axum server with state
     let app = Router::new()
         .route("/transaction", post(receive_transaction))
+        .route("/dag/state", get(get_dag_state))
         .with_state(state);
 
     // Get HTTP port from args or use default
@@ -333,6 +334,25 @@ async fn receive_transaction(
         "status": "success",
         "message": "Transaction received and propagated",
         "peers": peers.len()
+    }))
+}
+
+// Update the handler signature to use AppState
+async fn get_dag_state(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let dag = state.dag.lock().await;
+    let transactions = dag.get_all_transactions();
+    
+    Json(json!({
+        "transaction_count": transactions.len(),
+        "transactions": transactions.iter().map(|tx| {
+            json!({
+                "data": tx.data(),
+                "parents": tx.parents(),
+                "hash": tx.hash()
+            })
+        }).collect::<Vec<_>>()
     }))
 }
 

@@ -1,5 +1,6 @@
 use crate::transaction::Transaction;
 use std::collections::HashMap;
+use sha2::{Sha256, Digest};
 
 pub struct DAG {
     pub transactions: HashMap<String, Transaction>,
@@ -34,6 +35,10 @@ impl DAG {
             );
         }
     }
+
+    pub fn get_all_transactions(&self) -> Vec<&Transaction> {
+        self.transactions.values().collect()
+    }
 }
 
 impl Default for DAG {
@@ -41,3 +46,20 @@ impl Default for DAG {
     Self::new()
     }
     }
+
+impl Transaction {
+    pub fn data(&self) -> &str {
+        &self.data
+    }
+
+    pub fn parents(&self) -> &Vec<String> {
+        &self.parents
+    }
+
+    pub fn hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.data);
+        hasher.update(&self.id);
+        format!("{:x}", hasher.finalize())
+    }
+}
