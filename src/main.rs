@@ -142,7 +142,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let swarm_task = {
         let dag = dag.clone();
         let swarm_clone = swarm.clone();
-        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new("peers.json")));
+        let local_peer_id = {
+            let swarm = swarm_clone.lock().await;
+            *swarm.local_peer_id()
+        };
+        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
 
         tokio::spawn(async move {
             loop {
@@ -164,12 +168,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Create shared state
-    let peer_manager = Arc::new(TokioMutex::new(PeerManager::new("peers.json")));
-    let state = (
-        peer_manager.clone(),
-        dag.clone(),
-        swarm.clone()
-    );
+    let state = {
+        let swarm_lock = swarm.lock().await;
+        let local_peer_id = *swarm_lock.local_peer_id();
+        // Drop the lock before creating the state tuple
+        drop(swarm_lock);
+        
+        let peer_manager = Arc::new(TokioMutex::new(PeerManager::new(local_peer_id)));
+        (
+            peer_manager.clone(),
+            dag.clone(),
+            swarm.clone()  // Clone the Arc<Mutex<Swarm>> instead of the guard
+        )
+    };
 
     // Initialize the Axum server with state
     let app = Router::new()

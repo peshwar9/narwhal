@@ -58,133 +58,85 @@ impl Default for PeerStorage {
     }
 }
 
+impl PeerStorage {
+    pub fn new(peer_id: &PeerId) -> Self {
+        // Create a unique filename for each peer
+        let filename = format!("peers_{}.json", peer_id.to_base58());
+        
+        // Try to load existing peers from the unique file
+        if let Ok(content) = fs::read_to_string(&filename) {
+            if let Ok(storage) = serde_json::from_str::<PeerStorage>(&content) {
+                return storage;
+            }
+        }
+        
+        // Return empty storage if file doesn't exist or can't be parsed
+        PeerStorage::default()
+    }
+
+    pub fn save_to_disk(&self, peer_id: &PeerId) {
+        let filename = format!("peers_{}.json", peer_id.to_base58());
+        if let Ok(content) = serde_json::to_string_pretty(self) {
+            if let Ok(mut file) = File::create(&filename) {
+                if let Err(e) = file.write_all(content.as_bytes()) {
+                    error!("Failed to write peer storage to {}: {}", filename, e);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PeerManager {
     pub peers: HashSet<PeerId>,
     pub peer_addresses: HashMap<PeerId, Multiaddr>,
-    storage_path: String,
+    local_peer_id: PeerId,
 }
 
 impl PeerManager {
-    pub fn new(storage_path: &str) -> Self {
-        info!("Initializing PeerManager with storage at: {}", storage_path);
+    pub fn new(local_peer_id: PeerId) -> Self {
+        let storage = PeerStorage::new(&local_peer_id);
         
-        // Ensure the path is valid and accessible
-        if let Err(e) = File::create(storage_path) {
-            error!("Failed to create initial peer storage file: {}", e);
-        }
-        
-        let storage = Self::load_from_disk(storage_path);
-        
-        // Convert serializable types to runtime types
-        let peers: HashSet<PeerId> = storage.peers.into_iter()
+        // Convert SerializablePeerId to PeerId
+        let peers = storage.peers.into_iter()
             .filter_map(|spid| {
-                match PeerId::try_from(spid) {
-                    Ok(peer_id) => Some(peer_id),
-                    Err(e) => {
-                        error!("Failed to parse stored PeerId: {}", e);
-                        None
-                    }
-                }
+                PeerId::try_from(spid).ok()
             })
-            .collect();
+            .collect::<HashSet<_>>();
 
-        let peer_addresses: HashMap<PeerId, Multiaddr> = storage.addresses.into_iter()
+        // Convert SerializableMultiaddr to Multiaddr
+        let peer_addresses = storage.addresses.into_iter()
             .filter_map(|(peer_str, sma)| {
-                match (peer_str.parse(), Multiaddr::try_from(sma)) {
-                    (Ok(peer_id), Ok(addr)) => Some((peer_id, addr)),
-                    (Err(e), _) => {
-                        error!("Failed to parse stored PeerId string: {}", e);
-                        None
-                    },
-                    (_, Err(e)) => {
-                        error!("Failed to parse stored Multiaddr: {}", e);
-                        None
-                    }
-                }
+                let peer_id = peer_str.parse::<PeerId>().ok()?;
+                let addr = Multiaddr::try_from(sma).ok()?;
+                Some((peer_id, addr))
             })
-            .collect();
+            .collect::<HashMap<_, _>>();
 
-        let manager = Self {
+        PeerManager {
             peers,
             peer_addresses,
-            storage_path: storage_path.to_string(),
-        };
-        
-        // Try to save immediately to verify we can write
-        manager.save_to_disk();
-        
-        manager
-    }
-
-    fn load_from_disk(path: &str) -> PeerStorage {
-        match fs::read_to_string(path) {
-            Ok(contents) => {
-                match serde_json::from_str(&contents) {
-                    Ok(storage) => {
-                        info!("Loaded peer storage successfully");
-                        storage
-                    }
-                    Err(e) => {
-                        error!("Error parsing peer storage: {}", e);
-                        PeerStorage::default()
-                    }
-                }
-            }
-            Err(e) => {
-                info!("No existing peer storage found: {}", e);
-                PeerStorage::default()
-            }
-        }
-    }
-
-    fn save_to_disk(&self) {
-        // Create directory if it doesn't exist
-        if let Some(parent) = Path::new(&self.storage_path).parent() {
-            if !parent.exists() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    error!("Failed to create directory for peer storage: {}", e);
-                    return;
-                }
-            }
-        }
-
-        let storage = PeerStorage {
-            peers: self.peers.iter().cloned().map(SerializablePeerId::from).collect(),
-            addresses: self.peer_addresses.iter()
-                .map(|(k, v)| (k.to_string(), SerializableMultiaddr::from(v.clone())))
-                .collect(),
-        };
-
-        // Try to create/open the file first
-        let file = match File::create(&self.storage_path) {
-            Ok(file) => file,
-            Err(e) => {
-                error!("Failed to create/open peer storage file {}: {}", self.storage_path, e);
-                return;
-            }
-        };
-
-        // Then try to serialize and write
-        match serde_json::to_writer_pretty(file, &storage) {
-            Ok(_) => info!("Successfully saved peers to {}", self.storage_path),
-            Err(e) => error!("Failed to write peer storage: {}", e),
+            local_peer_id,
         }
     }
 
     pub fn add_peer_with_addr(&mut self, peer_id: PeerId, addr: Multiaddr) {
-        self.peers.insert(peer_id);
-        self.peer_addresses.insert(peer_id, addr.clone());
+        info!("Adding peer {:?} with address {:?}", peer_id, addr);
+        self.peers.insert(peer_id.clone());
+        self.peer_addresses.insert(peer_id, addr);
         self.save_to_disk();
-        info!("Added and saved peer {:?} with address {:?}", peer_id, addr);
-        info!("Current peers in storage: {:?}", self.peers);
     }
 
-    pub fn remove_peer(&mut self, peer_id: &PeerId) {
-        self.peers.remove(peer_id);
-        self.peer_addresses.remove(peer_id);
-        self.save_to_disk();
-        info!("Removed and saved peer {:?}", peer_id);
+    fn save_to_disk(&self) {
+        let storage = PeerStorage {
+            peers: self.peers.iter()
+                .map(|p| SerializablePeerId::from(p.clone()))
+                .collect(),
+            addresses: self.peer_addresses.iter()
+                .map(|(p, a)| (p.to_string(), SerializableMultiaddr::from(a.clone())))
+                .collect(),
+        };
+        storage.save_to_disk(&self.local_peer_id);
     }
 
     pub fn get_peers(&self) -> HashSet<PeerId> {
