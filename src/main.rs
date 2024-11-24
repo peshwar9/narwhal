@@ -315,25 +315,33 @@ async fn receive_transaction(
 
     debug!("[receive_transaction] Available peers: {:?}", peers);
 
-    if peers.is_empty() {
-        return Json(json!({
-            "status": "warning",
-            "message": "Transaction received but no peers available for propagation"
-        }));
-    }
-
     // Add transaction to DAG
     let transaction = Transaction::new(request.data.clone(), request.parents.clone());
     let mut dag = state.dag.lock().await;
-    dag.add_transaction(transaction);
+    dag.add_transaction(transaction.clone());
 
-    // Log success with peer count
-    info!("Transaction added to DAG and will be propagated to {} peers", peers.len());
+    // Create transaction message
+    let message = TransactionMessage {
+        transaction_id: transaction.id,
+        transaction_data: transaction.data,
+        parents: transaction.parents,
+    };
+
+    // Send to all peers using swarm
+    let mut swarm = state.swarm.lock().await;
+    let peer_count = peers.len();
+    for peer in &peers {
+        debug!("[receive_transaction] Sending transaction to peer: {:?}", peer);
+        let request_id = swarm.behaviour_mut().send_message(peer, message.clone());
+        debug!("[receive_transaction] Sent transaction to peer {} with request_id {:?}", peer, request_id);
+    }
+
+    info!("Transaction added to DAG and propagated to {} peers", peer_count);
 
     Json(json!({
         "status": "success",
         "message": "Transaction received and propagated",
-        "peers": peers.len()
+        "peers": peer_count
     }))
 }
 

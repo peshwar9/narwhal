@@ -208,9 +208,9 @@ impl Behavior {
                 peer, 
                 message 
             } => {
+                debug!("[handle_request_response_event] Received transaction message: {:?}", message);
                 info!("Received transaction from peer {}: {:?}", peer, message);
-                // 1. Add the transaction to your DAG
-                // 2. Propagate to other peers if needed
+                // TODO: Add transaction to DAG
             },
             RequestResponseEvent::InboundFailure { 
                 peer,
@@ -219,7 +219,14 @@ impl Behavior {
             } => {
                 error!("Inbound request failed from peer {}: {:?}", peer, error);
             },
-            _ => {} // Handle other events if needed
+            RequestResponseEvent::OutboundFailure { 
+                peer,
+                error,
+                .. 
+            } => {
+                error!("Outbound request to peer {}: {:?}", peer, error);
+            }
+            _ => {} 
         }
     }
 
